@@ -5,6 +5,7 @@ import faiss
 import pickle
 import numpy as np
 import pandas as pd
+import torch
 
 from tqdm.auto import tqdm
 from contextlib import contextmanager
@@ -206,6 +207,27 @@ class SparseRetrieval:
                     tmp["original_context"] = example["context"]
                     tmp["answers"] = example["answers"]
                 total.append(tmp)
+
+            # Dense Embedding 적용 결과 
+            with torch.no_grad():
+                p_encoder.eval()
+                q_encoder.eval()
+
+                q_seqs_val = tokenizer([query], padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                q_emb = q_encoder(**q_seqs_val).to('cpu')  #(num_query, emb_dim)
+
+                p_embs = []
+                for p in valid_corpus:
+                    p = tokenizer(p, padding="max_length", truncation=True, return_tensors='pt').to('cuda')
+                    p_emb = p_encoder(**p).to('cpu').numpy()
+                    p_embs.append(p_emb)
+
+                p_embs = torch.Tensor(p_embs).squeeze()  # (num_passage, emb_dim)
+
+
+
+
+
 
             cqas = pd.DataFrame(total)
             return cqas
