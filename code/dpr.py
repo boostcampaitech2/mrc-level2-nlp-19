@@ -358,7 +358,7 @@ class DenseRetrieval:
 
             # question sequense validation 토크나이저 생성
             q_seqs_val = self.tokenizer(
-                [query],
+                query,
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt"
@@ -383,11 +383,59 @@ class DenseRetrieval:
         p_embs = torch.stack(
             p_embs, dim=0
         ).view(len(self.passage_dataloader.dataset), -1)
-        print(2222222222222222222222222222222, p_embs, 33333333333333333333, dot_prod_scores, 444444444444444444, rank)
+        
 
         # Dot product를 통해 유사도 구하기
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
+
+        # print(2222222222222222222222222222222, p_embs, 33333333333333333333, dot_prod_scores, 444444444444444444, rank)
+
+        """
+        tensor([[ 0.7563,  0.9276,  0.9635,  ...,  0.5535,  0.4253,  0.9996],
+        [ 0.3558,  0.7835,  0.9392,  ...,  0.1651,  0.3144,  0.9997],
+        [ 0.7292,  0.9224,  0.9527,  ..., -0.4599,  0.7758,  1.0000],
+        ...,
+        [ 0.6099,  0.8473,  0.9433,  ...,  0.2389, -0.4142,  0.9938],
+        [ 0.7342,  0.9203,  0.9741,  ..., -0.0439,  0.5146,  0.9999],
+        [ 0.5005,  0.7715,  0.7126,  ...,  0.5556,  0.0992,  0.9993]])
+        """
+
+        """
+        tensor([[-9.7220e+01, -1.0050e+02, -1.1506e+02, -1.1577e+02, -7.9811e+01,
+         -1.3093e+02, -8.0151e+01, -4.8706e+01, -1.2993e+02, -8.0824e+01],
+        [ 1.6180e+01,  3.4977e+01,  1.6717e+01,  2.8833e+01,  3.4405e+01,
+          1.3194e+01,  2.6219e+01,  4.3385e+01,  8.6389e+00,  3.1599e+01],
+        [ 3.9723e+01,  5.9733e+01,  5.9473e+01,  5.8348e+01,  6.2999e+01,
+          5.3824e+01,  5.1889e+01,  5.8070e+01,  3.6547e+01,  4.8369e+01],
+        [-6.2038e+00, -1.6204e+00, -1.0324e+01, -1.4898e+01,  1.1068e+01,
+         -1.7359e+01,  5.7232e+00,  2.3650e+01, -2.5400e+01,  3.4510e-02],
+        [-6.6613e+01, -5.6376e+01, -7.0632e+01, -6.8005e+01, -4.8165e+01,
+         -7.9410e+01, -5.0374e+01, -2.0582e+01, -8.6535e+01, -5.4668e+01],
+        [-6.6542e+01, -5.3435e+01, -7.2674e+01, -6.0692e+01, -4.5914e+01,
+         -7.5407e+01, -5.6701e+01, -3.0053e+01, -8.6252e+01, -4.4623e+01],
+        [-2.0133e+01, -1.6770e+01, -2.9859e+01, -2.1076e+01, -8.7047e+00,
+         -3.4903e+01, -1.1651e+01,  6.9568e+00, -4.0030e+01, -9.4552e+00],
+        [ 1.1997e+01,  2.6791e+01,  1.5369e+01,  1.7148e+01,  3.3559e+01,
+          1.2185e+01,  2.7093e+01,  3.4059e+01,  3.9190e-01,  3.0677e+01],
+        [-5.8074e+01, -5.0264e+01, -6.1541e+01, -5.9632e+01, -3.5633e+01,
+         -6.8517e+01, -4.5823e+01, -1.4994e+01, -7.9000e+01, -4.4646e+01],
+        [-7.1516e+01, -6.4831e+01, -8.3239e+01, -7.5139e+01, -5.8612e+01,
+         -8.8835e+01, -6.3805e+01, -3.2248e+01, -9.8506e+01, -5.5905e+01]])
+        """
+
+        """
+        tensor([[7, 4, 6, 9, 0, 1, 2, 3, 8, 5],
+        [7, 1, 4, 9, 3, 6, 2, 0, 5, 8],
+        [4, 1, 2, 3, 7, 5, 6, 9, 0, 8],
+        [7, 4, 6, 9, 1, 0, 2, 3, 5, 8],
+        [7, 4, 6, 9, 1, 0, 3, 2, 5, 8],
+        [7, 9, 4, 1, 6, 3, 0, 2, 5, 8],
+        [7, 4, 9, 6, 1, 0, 3, 2, 5, 8],
+        [7, 4, 9, 6, 1, 3, 2, 5, 0, 8],
+        [7, 4, 9, 6, 1, 0, 3, 2, 5, 8],
+        [7, 9, 4, 6, 1, 0, 3, 2, 5, 8]])
+        """
 
         print("==========dense.py get_relevant_doc end==========")
 
@@ -501,47 +549,47 @@ class DenseRetrieval:
         })
         '''
 
-        if isinstance(query_or_dataset, str):
-            doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
-            print("[Search query]\n", query_or_dataset, "\n")
+        # if isinstance(query_or_dataset, str):
+        #     doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
+        #     print("[Search query]\n", query_or_dataset, "\n")
 
-            for i in range(topk):
-                print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
-                print(self.contexts[doc_indices[i]])
+        #     for i in range(topk):
+        #         print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
+        #         print(self.contexts[doc_indices[i]])
 
-            print("==========dense.py retrieve str end==========")
-            return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
+        #     print("==========dense.py retrieve str end==========")
+        #     return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
 
-        elif isinstance(query_or_dataset, Dataset):
+        # elif isinstance(query_or_dataset, Dataset):
 
-            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
-            total = []
-            with timer("query exhaustive search"):
-                doc_scores, doc_indices = self.get_relevant_doc(
-                    query_or_dataset["question"], k=topk
-                )
-            for idx, example in enumerate(
-                tqdm(query_or_dataset, desc="Dense retrieval: ")
-            ):
-                tmp = {
-                    # Query와 해당 id를 반환합니다.
-                    "question": example["question"],
-                    "id": example["id"],
-                    # Retrieve한 Passage의 id, context를 반환합니다.
-                    "context_id": doc_indices[idx],
-                    "context": " ".join(
-                        [self.contexts[pid] for pid in doc_indices[idx]]
-                    ),
-                }
-                if "context" in example.keys() and "answers" in example.keys():
-                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
-                    tmp["original_context"] = example["context"]
-                    tmp["answers"] = example["answers"]
-                total.append(tmp)
+        # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
+        total = []
+        with timer("query exhaustive search"):
+            doc_scores, doc_indices = self.get_relevant_doc(
+                query_or_dataset["question"], k=topk
+            )
+        for idx, example in enumerate(
+            tqdm(query_or_dataset, desc="Dense retrieval: ")
+        ):
+            tmp = {
+                # Query와 해당 id를 반환합니다.
+                "question": example["question"],
+                "id": example["id"],
+                # Retrieve한 Passage의 id, context를 반환합니다.
+                "context_id": doc_indices[idx],
+                "context": " ".join(
+                    [self.contexts[pid] for pid in doc_indices[idx]]
+                ),
+            }
+            if "context" in example.keys() and "answers" in example.keys():
+                # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                tmp["original_context"] = example["context"]
+                tmp["answers"] = example["answers"]
+            total.append(tmp)
 
-            cqas = pd.DataFrame(total)
-            print("==========dense.py retrieve Dataset end==========")
-            return cqas
+        cqas = pd.DataFrame(total)
+        print("==========dense.py retrieve Dataset end==========")
+        return cqas
 
     # def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
 
@@ -571,39 +619,39 @@ class DenseRetrieval:
     #     doc_indices = sorted_result.tolist()[:k]
     #     return doc_score, doc_indices
 
-    def get_relevant_doc_bulk(
-        self, queries: List, k: Optional[int] = 1
-    ) -> Tuple[List, List]:
-        print("----------dense.py get_relevant_doc_bulk start----------")
+    # def get_relevant_doc_bulk(
+    #     self, queries: List, k: Optional[int] = 1
+    # ) -> Tuple[List, List]:
+    #     print("----------dense.py get_relevant_doc_bulk start----------")
 
-        """
-        Arguments:
-            queries (List):
-                하나의 Query를 받습니다.
-            k (Optional[int]): 1
-                상위 몇 개의 Passage를 반환할지 정합니다.
-        Note:
-            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
-        """
+    #     """
+    #     Arguments:
+    #         queries (List):
+    #             하나의 Query를 받습니다.
+    #         k (Optional[int]): 1
+    #             상위 몇 개의 Passage를 반환할지 정합니다.
+    #     Note:
+    #         vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+    #     """
 
-        query_vec = self.tfidfv.transform(queries)
-        assert (
-            np.sum(query_vec) != 0
-        ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+    #     query_vec = self.tfidfv.transform(queries)
+    #     assert (
+    #         np.sum(query_vec) != 0
+    #     ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
 
-        result = query_vec * self.p_embedding.T
-        if not isinstance(result, np.ndarray):
-            result = result.toarray()
-        doc_scores = []
-        doc_indices = []
-        for i in range(result.shape[0]):
-            sorted_result = np.argsort(result[i, :])[::-1]
-            doc_scores.append(result[i, :][sorted_result].tolist()[:k])
-            doc_indices.append(sorted_result.tolist()[:k])
+    #     result = query_vec * self.p_embedding.T
+    #     if not isinstance(result, np.ndarray):
+    #         result = result.toarray()
+    #     doc_scores = []
+    #     doc_indices = []
+    #     for i in range(result.shape[0]):
+    #         sorted_result = np.argsort(result[i, :])[::-1]
+    #         doc_scores.append(result[i, :][sorted_result].tolist()[:k])
+    #         doc_indices.append(sorted_result.tolist()[:k])
 
-        print("==========dense.py get_relevant_doc_bulk end==========")
+    #     print("==========dense.py get_relevant_doc_bulk end==========")
 
-        return doc_scores, doc_indices
+    #     return doc_scores, doc_indices
 
     def retrieve_faiss(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
@@ -773,7 +821,7 @@ if __name__ == "__main__":
         use_fast=False,
     )
 
-    Train_args = TrainingArguments(
+    train_args = TrainingArguments(
         output_dir="dense_retireval",
         evaluation_strategy="epoch",
         learning_rate=4e-5,
@@ -786,8 +834,8 @@ if __name__ == "__main__":
     model_checkpoint = "klue/bert-base"
 
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(Train_args.device)
-    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(Train_args.device)
+    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(train_args.device)
+    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(train_args.device)
 
     # 데이터셋과 모델은 아래와 같이 불러옵니다.
     train_dataset = org_dataset["train"].flatten_indices()
@@ -798,7 +846,7 @@ if __name__ == "__main__":
     train_dataset = full_ds[sample_idx]
 
     retriever = DenseRetrieval(
-        args=Train_args,
+        args=train_args,
         dataset=train_dataset,
         num_neg=2,
         tokenizer=tokenizer,
@@ -810,29 +858,37 @@ if __name__ == "__main__":
 
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
 
-    # if args.use_faiss:
+    if args.use_faiss:
 
-    #     # test single query
-    #     with timer("single query by faiss"):
-    #         scores, indices = retriever.retrieve_faiss(query)
+        # test single query
+        with timer("single query by faiss"):
+            scores, indices = retriever.retrieve_faiss(query)
 
-    #     # test bulk
-    #     with timer("bulk query by exhaustive search"):
-    #         df = retriever.retrieve_faiss(full_ds)
-    #         df["correct"] = df["original_context"] == df["context"]
+        # test bulk
+        with timer("bulk query by exhaustive search"):
+            df = retriever.retrieve_faiss(full_ds)
+            df["correct"] = df["original_context"] == df["context"]
 
-    #         print("correct retrieval result by faiss", df["correct"].sum() / len(df))
+            print("correct retrieval result by faiss", df["correct"].sum() / len(df))
 
-    # else:
-    #     with timer("bulk query by exhaustive search"):
-    #         df = retriever.retrieve(full_ds)
-    #         df["correct"] = df["original_context"] == df["context"]
-    #         print(
-    #             "correct retrieval result by exhaustive search",
-    #             df["correct"].sum() / len(df),
-    #         )
+    else:
+        with timer("bulk query by exhaustive search"):
 
-    #     with timer("single query by exhaustive search"):
-    #         scores, indices = retriever.retrieve(query)
+            train_dataset = org_dataset["train"].flatten_indices()
+    
+            # # 메모리가 부족한 경우 일부만 사용하세요 !
+            num_sample = 10
+            sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+            train_dataset = full_ds[sample_idx]
+
+            df = retriever.retrieve(train_dataset)
+            df["correct"] = df["original_context"] == df["context"]
+            print(
+                "correct retrieval result by exhaustive search",
+                df["correct"].sum() / len(df),
+            )
+
+        with timer("single query by exhaustive search"):
+            scores, indices = retriever.retrieve(query)
     
     print("==========dense.py main end==========")
