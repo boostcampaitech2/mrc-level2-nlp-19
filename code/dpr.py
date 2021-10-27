@@ -10,9 +10,6 @@ from tqdm.auto import tqdm
 from contextlib import contextmanager
 from typing import List, Tuple, NoReturn, Any, Optional, Union
 
-
-from sklearn.feature_extraction.text import TfidfVectorizer
-
 from datasets import (
     Dataset,
     load_from_disk,
@@ -28,6 +25,7 @@ from transformers import (
 
 from torch.utils.data import TensorDataset, DataLoader
 import torch
+import torch.nn.functional as F
 
 
 @contextmanager
@@ -109,6 +107,9 @@ class DenseRetrieval:
         self.p_encoder = p_encoder.to(args.device)
         self.q_encoder = q_encoder.to(args.device)
 
+        self.p_embedding = None  # get_dense_embedding()로 생성합니다
+        self.indexer = None  # build_faiss()로 생성합니다.
+
         self.prepare_in_batch_negative(num_neg=num_neg)
 
     def prepare_in_batch_negative(
@@ -117,6 +118,7 @@ class DenseRetrieval:
         num_neg=2,
         tokenizer=None
     ):
+        print("----------dense.py prepare_in_batch_negative start----------")
         """
         Arguments:
             dataset (datasets.Dataset, default=None):
@@ -203,17 +205,28 @@ class DenseRetrieval:
             valid_seqs["attention_mask"],
             valid_seqs["token_type_ids"]
         )
+        '''
+        [DataLoader]
+        Data loader. Combines a dataset and a sampler, and provides an iterable over the given dataset.
+
+        The DataLoader supports both map-style and iterable-style datasets with single- or multi-process loading,
+        customizing loading order and optional automatic batching (collation) and memory pinning.
+
+        See torch.utils.data documentation page for more details.
+        '''
         self.passage_dataloader = DataLoader(
             passage_dataset,
             batch_size=self.args.per_device_train_batch_size
         )
+
+        print("==========dense.py prepare_in_batch_negative end==========")
 
     # train 함수를 정의한 후 p_encoder과 q_encoder를 학습시켜봅시다.
     def train(
         self,
         args=None
     ):
-
+        print("----------dense.py train start----------")
         """
         Summary:
             train을 합니다. 위에 과제에서 이용한 코드를 활용합시다.
@@ -303,6 +316,7 @@ class DenseRetrieval:
                     torch.cuda.empty_cache()
 
                     del p_inputs, q_inputs
+        print("==========dense.py train end==========")
 
     def get_relevant_doc(
         self,
@@ -312,6 +326,7 @@ class DenseRetrieval:
         p_encoder=None,
         q_encoder=None
     ):
+        print("----------dense.py get_relevant_doc start----------")
         """
         Arguments:
             query (str)
@@ -341,14 +356,17 @@ class DenseRetrieval:
             p_encoder.eval()
             q_encoder.eval()
 
+            # question sequense validation 토크나이저 생성
             q_seqs_val = self.tokenizer(
                 [query],
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt"
             ).to(args.device)
+            # question embedding
             q_emb = q_encoder(**q_seqs_val).to("cpu")  # (num_query=1, emb_dim)
 
+            # passage embedding
             p_embs = []
             for batch in self.passage_dataloader:
 
@@ -365,16 +383,93 @@ class DenseRetrieval:
         p_embs = torch.stack(
             p_embs, dim=0
         ).view(len(self.passage_dataloader.dataset), -1)
+        print(2222222222222222222222222222222, p_embs, 33333333333333333333, dot_prod_scores, 444444444444444444, rank)
 
         # Dot product를 통해 유사도 구하기
         dot_prod_scores = torch.matmul(q_emb, torch.transpose(p_embs, 0, 1))
         rank = torch.argsort(dot_prod_scores, dim=1, descending=True).squeeze()
 
+        print("==========dense.py get_relevant_doc end==========")
+
         return rank[:k]
+
+
+    def get_dense_embedding(self) -> NoReturn:
+
+        print("----------dense.py get_dense_embedding start----------")
+
+        """
+        Summary:
+            Passage Embedding을 만들고
+            Embedding을 pickle로 저장합니다.
+            만약 미리 저장된 파일이 있으면 저장된 pickle을 불러옵니다.
+        """
+
+        # Pickle을 저장합니다.
+        pickle_name = f"dense_embedding.bin"
+        emd_path = os.path.join(self.data_path, pickle_name)
+
+        if os.path.isfile(emd_path):
+            with open(emd_path, "rb") as file:
+                self.p_embedding = pickle.load(file)
+            print("Embedding pickle load.")
+        else:
+            print("Build passage embedding")
+            self.p_embedding = self.tfidfv.fit_transform(self.contexts)
+
+            print(66666666666666666, self.p_embedding.shape)
+            
+            with open(emd_path, "wb") as file:
+                pickle.dump(self.p_embedding, file)
+            print("Embedding pickle saved.")
+
+        print("==========dense.py get_dense_embedding end==========")
+
+    def build_faiss(self, num_clusters=64) -> NoReturn:
+
+        print("----------dense.py build_faiss start----------")
+
+        """
+        Summary:
+            속성으로 저장되어 있는 Passage Embedding을
+            Faiss indexer에 fitting 시켜놓습니다.
+            이렇게 저장된 indexer는 `get_relevant_doc`에서 유사도를 계산하는데 사용됩니다.
+
+        Note:
+            Faiss는 Build하는데 시간이 오래 걸리기 때문에,
+            매번 새롭게 build하는 것은 비효율적입니다.
+            그렇기 때문에 build된 index 파일을 저정하고 다음에 사용할 때 불러옵니다.
+            다만 이 index 파일은 용량이 1.4Gb+ 이기 때문에 여러 num_clusters로 시험해보고
+            제일 적절한 것을 제외하고 모두 삭제하는 것을 권장합니다.
+        """
+
+        indexer_name = f"faiss_clusters{num_clusters}.index"
+        indexer_path = os.path.join(self.data_path, indexer_name)
+        if os.path.isfile(indexer_path):
+            print("Load Saved Faiss Indexer.")
+            self.indexer = faiss.read_index(indexer_path)
+
+        else:
+            p_emb = self.p_embedding.astype(np.float32).toarray()
+            emb_dim = p_emb.shape[-1]
+
+            num_clusters = num_clusters
+            quantizer = faiss.IndexFlatL2(emb_dim)
+
+            self.indexer = faiss.IndexIVFScalarQuantizer(
+                quantizer, quantizer.d, num_clusters, faiss.METRIC_L2
+            )
+            self.indexer.train(p_emb)
+            self.indexer.add(p_emb)
+            faiss.write_index(self.indexer, indexer_path)
+            print("Faiss Indexer Saved.")
+
+        print("==========dense.py build_faiss end==========")
 
     def retrieve(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
     ) -> Union[Tuple[List, List], pd.DataFrame]:
+        print("----------dense.py retrieve start----------")
 
         """
         Arguments:
@@ -396,7 +491,15 @@ class DenseRetrieval:
                 Ground Truth가 없는 Query (test) -> Retrieval한 Passage만 반환합니다.
         """
 
-        # assert self.p_embedding is not None, "get_sparse_embedding() 메소드를 먼저 수행해줘야합니다."
+        # assert self.p_embedding is not None, "get_dense_embedding() 메소드를 먼저 수행해줘야합니다."
+
+        '''
+        print(5555555555555555, query_or_dataset)
+        Dataset({
+                    features: ['__index_level_0__', 'answers', 'context', 'document_id', 'id', 'question', 'title'],
+                    num_rows: 4192
+        })
+        '''
 
         if isinstance(query_or_dataset, str):
             doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
@@ -406,6 +509,7 @@ class DenseRetrieval:
                 print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
                 print(self.contexts[doc_indices[i]])
 
+            print("==========dense.py retrieve str end==========")
             return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
 
         elif isinstance(query_or_dataset, Dataset):
@@ -413,11 +517,11 @@ class DenseRetrieval:
             # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
             total = []
             with timer("query exhaustive search"):
-                doc_scores, doc_indices = self.get_relevant_doc_bulk(
+                doc_scores, doc_indices = self.get_relevant_doc(
                     query_or_dataset["question"], k=topk
                 )
             for idx, example in enumerate(
-                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+                tqdm(query_or_dataset, desc="Dense retrieval: ")
             ):
                 tmp = {
                     # Query와 해당 id를 반환합니다.
@@ -436,7 +540,70 @@ class DenseRetrieval:
                 total.append(tmp)
 
             cqas = pd.DataFrame(total)
+            print("==========dense.py retrieve Dataset end==========")
             return cqas
+
+    # def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
+
+    #     """
+    #     Arguments:
+    #         query (str):
+    #             하나의 Query를 받습니다.
+    #         k (Optional[int]): 1
+    #             상위 몇 개의 Passage를 반환할지 정합니다.
+    #     Note:
+    #         vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+    #     """
+
+    #     with timer("transform"):
+    #         query_vec = self.tfidfv.transform([query])
+    #     assert (
+    #         np.sum(query_vec) != 0
+    #     ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+
+    #     with timer("query ex search"):
+    #         result = query_vec * self.p_embedding.T
+    #     if not isinstance(result, np.ndarray):
+    #         result = result.toarray()
+
+    #     sorted_result = np.argsort(result.squeeze())[::-1]
+    #     doc_score = result.squeeze()[sorted_result].tolist()[:k]
+    #     doc_indices = sorted_result.tolist()[:k]
+    #     return doc_score, doc_indices
+
+    def get_relevant_doc_bulk(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+        print("----------dense.py get_relevant_doc_bulk start----------")
+
+        """
+        Arguments:
+            queries (List):
+                하나의 Query를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+
+        query_vec = self.tfidfv.transform(queries)
+        assert (
+            np.sum(query_vec) != 0
+        ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+
+        result = query_vec * self.p_embedding.T
+        if not isinstance(result, np.ndarray):
+            result = result.toarray()
+        doc_scores = []
+        doc_indices = []
+        for i in range(result.shape[0]):
+            sorted_result = np.argsort(result[i, :])[::-1]
+            doc_scores.append(result[i, :][sorted_result].tolist()[:k])
+            doc_indices.append(sorted_result.tolist()[:k])
+
+        print("==========dense.py get_relevant_doc_bulk end==========")
+
+        return doc_scores, doc_indices
 
     def retrieve_faiss(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
@@ -508,8 +675,58 @@ class DenseRetrieval:
 
             return pd.DataFrame(total)
 
+    def get_relevant_doc_faiss(
+        self, query: str, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            query (str):
+                하나의 Query를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+
+        query_vec = self.tfidfv.transform([query])
+        assert (
+            np.sum(query_vec) != 0
+        ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+
+        q_emb = query_vec.toarray().astype(np.float32)
+        with timer("query faiss search"):
+            D, I = self.indexer.search(q_emb, k)
+
+        return D.tolist()[0], I.tolist()[0]
+
+    def get_relevant_doc_bulk_faiss(
+        self, queries: List, k: Optional[int] = 1
+    ) -> Tuple[List, List]:
+
+        """
+        Arguments:
+            queries (List):
+                하나의 Query를 받습니다.
+            k (Optional[int]): 1
+                상위 몇 개의 Passage를 반환할지 정합니다.
+        Note:
+            vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
+        """
+
+        query_vecs = self.tfidfv.transform(queries)
+        assert (
+            np.sum(query_vecs) != 0
+        ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
+
+        q_embs = query_vecs.toarray().astype(np.float32)
+        D, I = self.indexer.search(q_embs, k)
+
+        return D.tolist(), I.tolist()
+
 
 if __name__ == "__main__":
+    print("----------dense.py main start----------")
 
     import argparse
 
@@ -521,7 +738,7 @@ if __name__ == "__main__":
         "--model_name_or_path",
         default="bert-base-multilingual-cased",
         metavar="bert-base-multilingual-cased",
-        # metavar="klue/roberta-large",
+        # default="klue/roberta-large",
         type=str,
         help="",
     )
@@ -529,16 +746,16 @@ if __name__ == "__main__":
     parser.add_argument(
         "--context_path", default="wikipedia_documents.json", metavar="wikipedia_documents", type=str, help=""
     )
-    # ??? 하고 안 하고의 차이점
+
     parser.add_argument("--use_faiss", default=False, metavar=False, type=bool, help="")
 
     args = parser.parse_args()
-    print(11111111111111111111111, args)
+    # print(11111111111111111111111, args)
     # Namespace(context_path=None, data_path=None, dataset_name=None, model_name_or_path=None, use_faiss=None)
     
     # Test sparse
     org_dataset = load_from_disk(args.dataset_name)
-    # ??? 데이터셋 합치는 이유
+    
     full_ds = concatenate_datasets(
         [
             org_dataset["train"].flatten_indices(),
@@ -550,38 +767,46 @@ if __name__ == "__main__":
 
     from transformers import AutoTokenizer
 
-    # ??? use_fast할 경우 어떻게 되는지
+    
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name_or_path,
         use_fast=False,
     )
 
-    args = TrainingArguments(
+    Train_args = TrainingArguments(
         output_dir="dense_retireval",
         evaluation_strategy="epoch",
-        learning_rate=2e-5,
+        learning_rate=4e-5,
         per_device_train_batch_size=2,
         per_device_eval_batch_size=2,
-        num_train_epochs=2,
+        num_train_epochs=1,
         weight_decay=0.01
     )
 
     model_checkpoint = "klue/bert-base"
 
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
-    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
-    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(args.device)
+    p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(Train_args.device)
+    q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(Train_args.device)
+
+    # 데이터셋과 모델은 아래와 같이 불러옵니다.
+    train_dataset = org_dataset["train"].flatten_indices()
+    
+    # # 메모리가 부족한 경우 일부만 사용하세요 !
+    num_sample = 10
+    sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+    train_dataset = full_ds[sample_idx]
 
     retriever = DenseRetrieval(
-        args=args,
-        dataset=full_ds,
+        args=Train_args,
+        dataset=train_dataset,
         num_neg=2,
         tokenizer=tokenizer,
         p_encoder=p_encoder,
         q_encoder=q_encoder
     )
 
-    # retriever.train()
+    retriever.train()
 
     query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
 
@@ -599,13 +824,15 @@ if __name__ == "__main__":
     #         print("correct retrieval result by faiss", df["correct"].sum() / len(df))
 
     # else:
-    with timer("bulk query by exhaustive search"):
-        df = retriever.retrieve(full_ds)
-        df["correct"] = df["original_context"] == df["context"]
-        print(
-            "correct retrieval result by exhaustive search",
-            df["correct"].sum() / len(df),
-        )
+    #     with timer("bulk query by exhaustive search"):
+    #         df = retriever.retrieve(full_ds)
+    #         df["correct"] = df["original_context"] == df["context"]
+    #         print(
+    #             "correct retrieval result by exhaustive search",
+    #             df["correct"].sum() / len(df),
+    #         )
 
-    with timer("single query by exhaustive search"):
-        scores, indices = retriever.retrieve(query)
+    #     with timer("single query by exhaustive search"):
+    #         scores, indices = retriever.retrieve(query)
+    
+    print("==========dense.py main end==========")
