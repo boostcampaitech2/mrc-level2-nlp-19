@@ -392,6 +392,8 @@ class DenseRetrieval:
         # print(2222222222222222222222222222222, p_embs, 33333333333333333333, dot_prod_scores, 444444444444444444, rank)
 
         """
+        [p_embs]
+
         tensor([[ 0.7563,  0.9276,  0.9635,  ...,  0.5535,  0.4253,  0.9996],
         [ 0.3558,  0.7835,  0.9392,  ...,  0.1651,  0.3144,  0.9997],
         [ 0.7292,  0.9224,  0.9527,  ..., -0.4599,  0.7758,  1.0000],
@@ -402,6 +404,8 @@ class DenseRetrieval:
         """
 
         """
+        [dot_prod_scores]
+
         tensor([[-9.7220e+01, -1.0050e+02, -1.1506e+02, -1.1577e+02, -7.9811e+01,
          -1.3093e+02, -8.0151e+01, -4.8706e+01, -1.2993e+02, -8.0824e+01],
         [ 1.6180e+01,  3.4977e+01,  1.6717e+01,  2.8833e+01,  3.4405e+01,
@@ -425,6 +429,8 @@ class DenseRetrieval:
         """
 
         """
+        [rank]
+
         tensor([[7, 4, 6, 9, 0, 1, 2, 3, 8, 5],
         [7, 1, 4, 9, 3, 6, 2, 0, 5, 8],
         [4, 1, 2, 3, 7, 5, 6, 9, 0, 8],
@@ -517,6 +523,7 @@ class DenseRetrieval:
     def retrieve(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
     ) -> Union[Tuple[List, List], pd.DataFrame]:
+
         print("----------dense.py retrieve start----------")
 
         """
@@ -549,47 +556,48 @@ class DenseRetrieval:
         })
         '''
 
-        # if isinstance(query_or_dataset, str):
-        #     doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
-        #     print("[Search query]\n", query_or_dataset, "\n")
+        if isinstance(query_or_dataset, str):
+            doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
+            print("[Search query]\n", query_or_dataset, "\n")
 
-        #     for i in range(topk):
-        #         print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
-        #         print(self.contexts[doc_indices[i]])
+            for i in range(topk):
+                print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
+                print(self.contexts[doc_indices[i]])
 
-        #     print("==========dense.py retrieve str end==========")
-        #     return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
+            print("==========dense.py retrieve str end==========")
+            print(33333333333333333333333)
+            return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
 
-        # elif isinstance(query_or_dataset, Dataset):
+        elif isinstance(query_or_dataset, Dataset):
+            # Dense한 Passage를 pd.DataFrame으로 반환합니다.
+            total = []
+            with timer("query exhaustive search"):
+                doc_scores, doc_indices = self.get_relevant_doc(
+                    query_or_dataset["question"], k=topk
+                )
+            for idx, example in enumerate(
+                tqdm(query_or_dataset, desc="Dense retrieval: ")
+            ):
+                tmp = {
+                    # Query와 해당 id를 반환합니다.
+                    "question": example["question"],
+                    "id": example["id"],
+                    # Retrieve한 Passage의 id, context를 반환합니다.
+                    "context_id": doc_indices[idx],
+                    "context": " ".join(
+                        [self.contexts[pid] for pid in doc_indices[idx]]
+                    ),
+                }
+                if "context" in example.keys() and "answers" in example.keys():
+                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                    tmp["original_context"] = example["context"]
+                    tmp["answers"] = example["answers"]
+                total.append(tmp)
 
-        # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
-        total = []
-        with timer("query exhaustive search"):
-            doc_scores, doc_indices = self.get_relevant_doc(
-                query_or_dataset["question"], k=topk
-            )
-        for idx, example in enumerate(
-            tqdm(query_or_dataset, desc="Dense retrieval: ")
-        ):
-            tmp = {
-                # Query와 해당 id를 반환합니다.
-                "question": example["question"],
-                "id": example["id"],
-                # Retrieve한 Passage의 id, context를 반환합니다.
-                "context_id": doc_indices[idx],
-                "context": " ".join(
-                    [self.contexts[pid] for pid in doc_indices[idx]]
-                ),
-            }
-            if "context" in example.keys() and "answers" in example.keys():
-                # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
-                tmp["original_context"] = example["context"]
-                tmp["answers"] = example["answers"]
-            total.append(tmp)
-
-        cqas = pd.DataFrame(total)
-        print("==========dense.py retrieve Dataset end==========")
-        return cqas
+            print("==========dense.py retrieve Dataset end==========")
+            print(222222222222222222222222222222222222)
+            return pd.DataFrame(total)
+        print(111111111111111111111111, query_or_dataset, type(query_or_dataset))
 
     # def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
 
@@ -657,6 +665,8 @@ class DenseRetrieval:
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
     ) -> Union[Tuple[List, List], pd.DataFrame]:
 
+        print("----------dense.py retrieve_faiss start----------")
+
         """
         Arguments:
             query_or_dataset (Union[str, Dataset]):
@@ -675,10 +685,10 @@ class DenseRetrieval:
             다수의 Query를 받는 경우,
                 Ground Truth가 있는 Query (train/valid) -> 기존 Ground Truth Passage를 같이 반환합니다.
                 Ground Truth가 없는 Query (test) -> Retrieval한 Passage만 반환합니다.
-            retrieve와 같은 기능을 하지만 faiss.indexer를 사용합니다.
+            !!! retrieve와 같은 기능을 하지만 faiss.indexer를 사용합니다.
         """
 
-        assert self.indexer is not None, "build_faiss()를 먼저 수행해주세요."
+        # assert self.indexer is not None, "build_faiss()를 먼저 수행해주세요."
 
         if isinstance(query_or_dataset, str):
             doc_scores, doc_indices = self.get_relevant_doc_faiss(
@@ -694,16 +704,15 @@ class DenseRetrieval:
 
         elif isinstance(query_or_dataset, Dataset):
 
-            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
-            queries = query_or_dataset["question"]
+            # Dense한 Passage를 pd.DataFrame으로 반환합니다.
             total = []
 
             with timer("query faiss search"):
                 doc_scores, doc_indices = self.get_relevant_doc_bulk_faiss(
-                    queries, k=topk
+                    query_or_dataset["question"], k=topk
                 )
             for idx, example in enumerate(
-                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+                tqdm(query_or_dataset, desc="Dense retrieval: ")
             ):
                 tmp = {
                     # Query와 해당 id를 반환합니다.
@@ -824,7 +833,7 @@ if __name__ == "__main__":
     train_args = TrainingArguments(
         output_dir="dense_retireval",
         evaluation_strategy="epoch",
-        learning_rate=4e-5,
+        learning_rate=2e-5,
         per_device_train_batch_size=2,
         per_device_eval_batch_size=2,
         num_train_epochs=1,
@@ -874,14 +883,14 @@ if __name__ == "__main__":
     else:
         with timer("bulk query by exhaustive search"):
 
-            train_dataset = org_dataset["train"].flatten_indices()
-    
-            # # 메모리가 부족한 경우 일부만 사용하세요 !
-            num_sample = 10
-            sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+            # 메모리가 부족한 경우 일부만 사용하세요 !
+            num_sample = 2
+            sample_idx = np.random.choice(range(len(full_ds)), num_sample)
             train_dataset = full_ds[sample_idx]
+            print(train_dataset)
 
             df = retriever.retrieve(train_dataset)
+            print(df)
             df["correct"] = df["original_context"] == df["context"]
             print(
                 "correct retrieval result by exhaustive search",
