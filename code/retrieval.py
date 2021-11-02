@@ -21,6 +21,8 @@ from datasets import (
     concatenate_datasets,
 )
 
+from elasticsearch import Elasticsearch
+
 
 @contextmanager
 def timer(name):
@@ -77,6 +79,63 @@ class SparseRetrieval:
 
         self.p_embedding = None  # get_sparse_embedding()로 생성합니다
         self.indexer = None  # build_faiss()로 생성합니다.
+
+    def elastic_retrieve(
+        self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
+        ) -> Union[Tuple[List, List], pd.DataFrame]:
+        es = Elasticsearch()
+        INDEX_NAME = 'wiki_index'
+
+        if isinstance(query_or_dataset, str):
+            res = es.search(index=INDEX_NAME, q=query_or_dataset)
+            doc_indices = []
+            for hit in res['hits']['hits']:
+                doc_indices.append(hit['_id']) 
+
+            for i in range(topk):
+                # print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
+                print(self.contexts[doc_indices[i]])
+
+            return ([self.contexts[doc_indices[i]] for i in range(topk)])
+
+        elif isinstance(query_or_dataset, Dataset):
+
+            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
+            total = []
+            with timer("query exhaustive search"):
+                doc_indices = []
+                for query in query_or_dataset["question"]:
+                    res = es.search(index=INDEX_NAME, q=query)
+                    doc_indice = []
+                    for hit in res['hits']['hits']:
+                        doc_indice.append(hit['_id']) 
+                    doc_indices.append(doc_indice)
+
+            for idx, example in enumerate(
+                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+            ):
+                tmp = {
+                    # Query와 해당 id를 반환합니다.
+                    "question": example["question"],
+                    "id": example["id"],
+                    # Retrieve한 Passage의 id, context를 반환합니다.
+                    "context_id": doc_indices[idx],
+                    # "context": [self.contexts[pid] for pid in doc_indices[idx]]
+                    "context": " ".join(
+                        [self.contexts[int(pid)] for pid in doc_indices[idx]]
+                    )
+                }
+                if "context" in example.keys() and "answers" in example.keys():
+                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                    tmp["original_context"] = example["context"]
+                    tmp["answers"] = example["answers"]
+                total.append(tmp)
+
+            cqas = pd.DataFrame(total)
+        return cqas
+
+
+
 
     def get_sparse_embedding(self) -> NoReturn:
 
@@ -426,14 +485,14 @@ class DenseRetrieval:
 
         # Pickle을 저장합니다.
         pickle_name = f"dense_embedding.bin"
-        q_encoder_name = f"q_encoder.pt"
+        q_encoder_name = f"q_encoder3.pt"
         emd_path = os.path.join(self.data_path, pickle_name)
         q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
 
         if os.path.isfile(emd_path) and os.path.isfile(q_model_path):
             with open(emd_path, "rb") as file:
                 self.p_embedding = pickle.load(file)
-                self.p_embedding = self.p_embedding.to('cpu').numpy()
+                # self.p_embedding = self.p_embedding.to('cpu').numpy()
             self.q_encoder = torch.load(q_model_path)
             print("Dense Embedding pickle load.")
         else:

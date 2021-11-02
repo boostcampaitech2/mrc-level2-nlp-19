@@ -121,15 +121,20 @@ def run_retrieval(
     retriever_sparse = SparseRetrieval(
         tokenize_fn=tokenize_fn.tokenize, data_path=data_path, context_path=context_path
     )
-    retriever_sparse.get_sparse_embedding()
+    # retriever_sparse.get_sparse_embedding()
 
-    if data_args.use_faiss:
-        retriever_sparse.build_faiss(num_clusters=data_args.num_clusters)
-        df_sparse = retriever_sparse.retrieve_faiss(
-            datasets["validation"], topk=data_args.top_k_retrieval
-        )
-    else:
-        df_sparse = retriever_sparse.retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
+    # if data_args.use_faiss:
+    #     retriever_sparse.build_faiss(num_clusters=data_args.num_clusters)
+    #     df = retriever_sparse.retrieve_faiss(
+    #         datasets["validation"], topk=data_args.top_k_retrieval
+    #     )
+    # else:
+    #     df = retriever_sparse.retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
+    
+
+
+    df = retriever_sparse.elastic_retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
+
 
     retriever_dense = DenseRetrieval(
         tokenize_fn=tokenize_fn, data_path=data_path, context_path=context_path
@@ -139,11 +144,19 @@ def run_retrieval(
     df_dense = retriever_dense.retrieve_faiss(
         datasets["validation"], topk=data_args.top_k_retrieval
     )
-    df = df_sparse
-    for idx in range(len(df_sparse)):
-        temp = df_sparse["context"][idx] + df_dense["context"][idx]
-        df["context"][idx] = " ".join(temp)
-
+    # df = df_sparse
+    # for idx in range(len(df_sparse)):
+    #     temp = df_sparse["context"][idx] + df_dense["context"][idx]
+    #     df["context"][idx] = " ".join(temp)
+    df = df_dense
+    for idx in range(len(df_dense)):
+        if idx % 1000 == 0:
+            print(df["context_id"][idx])
+            print('-----------')
+            print(df["question"][idx])
+            print('-----------')
+            print(df["context"][idx])
+        df["context"][idx] = " ".join(df_dense["context"][idx])
 
     # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
     if training_args.do_predict:
