@@ -107,7 +107,7 @@ class DenseRetrieval:
         self.p_encoder = p_encoder.to(args.device)
         self.q_encoder = q_encoder.to(args.device)
 
-        self.p_embedding = None  # get_dense_embedding()로 생성합니다
+        
         self.indexer = None  # build_faiss()로 생성합니다.
 
         self.prepare_in_batch_negative(num_neg=num_neg)
@@ -116,7 +116,7 @@ class DenseRetrieval:
         self,
         dataset=None,
         num_neg=2,
-        tokenizer=None
+        tokenizer=None,
     ):
         print("----------dense.py prepare_in_batch_negative start----------")
         """
@@ -142,6 +142,11 @@ class DenseRetrieval:
         if tokenizer is None:
             tokenizer = self.tokenizer
 
+        with open("../data/wikipedia_documents.json", "r", encoding="utf-8") as f:
+            wiki = json.load(f)
+
+        self.contexts = list(dict.fromkeys([v["text"] for v in wiki.values()]))
+
         # Negative sampling 을 위한 negative sample 들을 샘플링
         # 주어진 query/question 에 해당하지 않는 지문들을 뽑아서 훈련데이터로 넣어줍시다.
 
@@ -152,6 +157,7 @@ class DenseRetrieval:
 
         for c in dataset["context"]:
             while True:
+                # 0 ~ len(corpus)-1 사이의 랜덤 숫자 size만큼 뽑기
                 neg_idxs = np.random.randint(len(corpus), size=num_neg)
 
                 if not c in corpus[neg_idxs]:
@@ -445,7 +451,7 @@ class DenseRetrieval:
 
         print("==========dense.py get_relevant_doc end==========")
 
-        return rank[:k]
+        return dot_prod_scores[:k], rank[:k]
 
 
     def get_dense_embedding(self) -> NoReturn:
@@ -549,7 +555,7 @@ class DenseRetrieval:
         # assert self.p_embedding is not None, "get_dense_embedding() 메소드를 먼저 수행해줘야합니다."
 
         '''
-        print(5555555555555555, query_or_dataset)
+        print(query_or_dataset)
         Dataset({
                     features: ['__index_level_0__', 'answers', 'context', 'document_id', 'id', 'question', 'title'],
                     num_rows: 4192
@@ -560,6 +566,8 @@ class DenseRetrieval:
             doc_scores, doc_indices = self.get_relevant_doc(query_or_dataset, k=topk)
             print("[Search query]\n", query_or_dataset, "\n")
 
+            print("Ddddddddddddddddddddddd", doc_scores, 5555555555555555, doc_indices)
+
             for i in range(topk):
                 print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
                 print(self.contexts[doc_indices[i]])
@@ -568,16 +576,26 @@ class DenseRetrieval:
             print(33333333333333333333333)
             return (doc_scores, [self.contexts[doc_indices[i]] for i in range(topk)])
 
-        elif isinstance(query_or_dataset, Dataset):
+
+        # 수정!!!!!!!!!!
+        # elif isinstance(query_or_dataset, Dataset):
+        else:
+            print(query_or_dataset)
             # Dense한 Passage를 pd.DataFrame으로 반환합니다.
             total = []
             with timer("query exhaustive search"):
                 doc_scores, doc_indices = self.get_relevant_doc(
                     query_or_dataset["question"], k=topk
                 )
+                doc_scores = doc_scores.squeeze(0)
+                doc_indices = doc_indices.squeeze(0)
+            print(3535353535355353533533535, doc_scores, doc_indices)
             for idx, example in enumerate(
                 tqdm(query_or_dataset, desc="Dense retrieval: ")
             ):
+                print("2222fwfrr22", query_or_dataset)
+                print("222222222222222222222222", doc_indices[idx])
+                print()
                 tmp = {
                     # Query와 해당 id를 반환합니다.
                     "question": example["question"],
@@ -595,71 +613,8 @@ class DenseRetrieval:
                 total.append(tmp)
 
             print("==========dense.py retrieve Dataset end==========")
-            print(222222222222222222222222222222222222)
             return pd.DataFrame(total)
-        print(111111111111111111111111, query_or_dataset, type(query_or_dataset))
-
-    # def get_relevant_doc(self, query: str, k: Optional[int] = 1) -> Tuple[List, List]:
-
-    #     """
-    #     Arguments:
-    #         query (str):
-    #             하나의 Query를 받습니다.
-    #         k (Optional[int]): 1
-    #             상위 몇 개의 Passage를 반환할지 정합니다.
-    #     Note:
-    #         vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
-    #     """
-
-    #     with timer("transform"):
-    #         query_vec = self.tfidfv.transform([query])
-    #     assert (
-    #         np.sum(query_vec) != 0
-    #     ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
-
-    #     with timer("query ex search"):
-    #         result = query_vec * self.p_embedding.T
-    #     if not isinstance(result, np.ndarray):
-    #         result = result.toarray()
-
-    #     sorted_result = np.argsort(result.squeeze())[::-1]
-    #     doc_score = result.squeeze()[sorted_result].tolist()[:k]
-    #     doc_indices = sorted_result.tolist()[:k]
-    #     return doc_score, doc_indices
-
-    # def get_relevant_doc_bulk(
-    #     self, queries: List, k: Optional[int] = 1
-    # ) -> Tuple[List, List]:
-    #     print("----------dense.py get_relevant_doc_bulk start----------")
-
-    #     """
-    #     Arguments:
-    #         queries (List):
-    #             하나의 Query를 받습니다.
-    #         k (Optional[int]): 1
-    #             상위 몇 개의 Passage를 반환할지 정합니다.
-    #     Note:
-    #         vocab 에 없는 이상한 단어로 query 하는 경우 assertion 발생 (예) 뙣뙇?
-    #     """
-
-    #     query_vec = self.tfidfv.transform(queries)
-    #     assert (
-    #         np.sum(query_vec) != 0
-    #     ), "오류가 발생했습니다. 이 오류는 보통 query에 vectorizer의 vocab에 없는 단어만 존재하는 경우 발생합니다."
-
-    #     result = query_vec * self.p_embedding.T
-    #     if not isinstance(result, np.ndarray):
-    #         result = result.toarray()
-    #     doc_scores = []
-    #     doc_indices = []
-    #     for i in range(result.shape[0]):
-    #         sorted_result = np.argsort(result[i, :])[::-1]
-    #         doc_scores.append(result[i, :][sorted_result].tolist()[:k])
-    #         doc_indices.append(sorted_result.tolist()[:k])
-
-    #     print("==========dense.py get_relevant_doc_bulk end==========")
-
-    #     return doc_scores, doc_indices
+        # print(111111111111111111111111, query_or_dataset, type(query_or_dataset))
 
     def retrieve_faiss(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
@@ -719,7 +674,7 @@ class DenseRetrieval:
                     "question": example["question"],
                     "id": example["id"],
                     # Retrieve한 Passage의 id, context를 반환합니다.
-                    "context_id": doc_indices[idx],
+                    "context_id": doc_indices[idx][0],
                     "context": " ".join(
                         [self.contexts[pid] for pid in doc_indices[idx]]
                     ),
@@ -807,7 +762,7 @@ if __name__ == "__main__":
     parser.add_argument("--use_faiss", default=False, metavar=False, type=bool, help="")
 
     args = parser.parse_args()
-    # print(11111111111111111111111, args)
+    # print(args)
     # Namespace(context_path=None, data_path=None, dataset_name=None, model_name_or_path=None, use_faiss=None)
     
     # Test sparse
@@ -840,19 +795,21 @@ if __name__ == "__main__":
         weight_decay=0.01
     )
 
-    model_checkpoint = "klue/bert-base"
+    model_checkpoint = "klue/roberta-large"
 
     tokenizer = AutoTokenizer.from_pretrained(model_checkpoint)
     p_encoder = BertEncoder.from_pretrained(model_checkpoint).to(train_args.device)
     q_encoder = BertEncoder.from_pretrained(model_checkpoint).to(train_args.device)
 
     # 데이터셋과 모델은 아래와 같이 불러옵니다.
-    train_dataset = org_dataset["train"].flatten_indices()
+    # flatten_indices() : 원래 테이블의 오른쪽 행을 사용하여 새 화살표 테이블이 만듦
+    train_dataset = org_dataset["validation"]
+    # .flatten_indices()
     
     # # 메모리가 부족한 경우 일부만 사용하세요 !
-    num_sample = 10
-    sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
-    train_dataset = full_ds[sample_idx]
+    # num_sample = 10
+    # sample_idx = np.random.choice(range(len(train_dataset)), num_sample)
+    # train_dataset = full_ds[sample_idx]
 
     retriever = DenseRetrieval(
         args=train_args,
@@ -883,13 +840,13 @@ if __name__ == "__main__":
     else:
         with timer("bulk query by exhaustive search"):
 
-            # 메모리가 부족한 경우 일부만 사용하세요 !
-            num_sample = 2
-            sample_idx = np.random.choice(range(len(full_ds)), num_sample)
-            train_dataset = full_ds[sample_idx]
-            print(train_dataset)
+            # # 메모리가 부족한 경우 일부만 사용하세요 !
+            # num_sample = 2
+            # sample_idx = np.random.choice(range(len(full_ds)), num_sample)
+            # train_dataset = full_ds[sample_idx]
+            # print(train_dataset)
 
-            df = retriever.retrieve(train_dataset)
+            df = retriever.retrieve(org_dataset["validation"])
             print(df)
             df["correct"] = df["original_context"] == df["context"]
             print(
