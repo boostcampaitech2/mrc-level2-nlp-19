@@ -7,8 +7,10 @@ from typing import List, Callable, NoReturn, NewType, Any
 import dataclasses
 from datasets import load_metric, load_from_disk, Dataset, DatasetDict
 from kobert_tokenizer import KoBERTTokenizer
-from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer, BartForConditionalGeneration
+from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer, BartForConditionalGeneration , AutoModelForSeq2SeqLM
 
+import nltk
+nltk.download('punkt')
 from transformers import (
     Trainer,
     DataCollatorWithPadding,
@@ -47,7 +49,7 @@ import pytz
 
 import wandb
 
-wandb.init(project="MRC_19_1", entity="woongjoon")
+runn = wandb.init(project="MRC_19_1", entity="woongjoon" , tags = ["KETI-AIR/ke-t5-base", "hf_tokenizer"])
 
 # wandb.init(project="MRC_19_1", 
 #            name="bertgpt2",
@@ -76,6 +78,7 @@ def main():
     # training_args.per_device_train_batch_size = 4
     # print(training_args.per_device_train_batch_size)
     # return
+    num_epochs=2
     training_args = Seq2SeqTrainingArguments(
         output_dir=training_args.output_dir, 
         do_train=True, 
@@ -83,12 +86,13 @@ def main():
         predict_with_generate=True,
         per_device_train_batch_size=4,
         per_device_eval_batch_size=8,
-        num_train_epochs=training_args.num_train_epochs,
+        num_train_epochs=num_epochs,
         logging_dir='./logs',
         logging_steps=100,
         
         evaluation_strategy = 'steps' , 
-        eval_steps = 20,
+        eval_steps = 300,
+        # generation_num_beams=10,
         # save_strategy='epoch',
         report_to="wandb",
         fp16 = True,
@@ -119,14 +123,12 @@ def main():
     print(training_args)
     print("----")
     print(data_args)
-    tokenizer = AutoTokenizer.from_pretrained('klue/bert-base')
-    decode_tokenizer=PreTrainedTokenizerFast.from_pretrained("skt/kogpt2-base-v2",
-  bos_token='</s>', eos_token='</s>', unk_token='<unk>',
-  pad_token='<pad>', mask_token='<mask>') 
-    model = EncoderDecoderModel.from_encoder_decoder_pretrained("klue/bert-base", "skt/kogpt2-base-v2")
-    model.config.decoder_start_token_id = decode_tokenizer.bos_token_id
-    model.config.pad_token_id = decode_tokenizer.pad_token_id
-    model.config.vocab_size = model.config.decoder.vocab_size
+    
+ 
+    tokenizer=AutoTokenizer.from_pretrained("KETI-AIR/ke-t5-base")
+
+    model=AutoModelForSeq2SeqLM.from_pretrained("KETI-AIR/ke-t5-base")
+
     training_args.do_train=True
     training_args.do_eval=True
     print(
@@ -140,7 +142,7 @@ def main():
     
     # do_train mrc model 혹은 do_eval mrc model
     if training_args.do_train or training_args.do_eval:
-        run_mrc(data_args, training_args, model_args, datasets,decode_tokenizer, tokenizer, model)
+        run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
 def run_mrc(
@@ -149,7 +151,7 @@ def run_mrc(
     model_args: ModelArguments,
     datasets: DatasetDict,
     # data
-    decode_tokenizer,
+    
     tokenizer,
     model,
 ) -> NoReturn:
@@ -204,8 +206,8 @@ def run_mrc(
         # print(model_inputs.keys())
         # targets(label)을 위해 tokenizer 설정
         # print("padding: {0}".format(padding))
-        with decode_tokenizer.as_target_tokenizer():
-            labels = decode_tokenizer(
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(
                 targets,
                 truncation=True,
                 # truncation="only_second" if pad_on_right else "only_first",
@@ -224,9 +226,7 @@ def run_mrc(
         model_inputs["decoder_input_ids"]= labels["input_ids"].copy()
         for i in range(len(model_inputs["labels"])):
             model_inputs["example_id"].append(examples["id"][i])
-        # print("model_inputs: " + model_inputs.keys())
-        # for m in model_inputs.keys():
-        #     print(m + ": " + str(type(model_inputs[m])) )
+
         return model_inputs
 
 
@@ -285,8 +285,8 @@ def run_mrc(
         print(preds)
         print(labels)
         
-        preds = ["\n".join(tokenizer.decode(pred)) for pred in preds]
-        labels = ["\n".join(tokenizer.decode(label)) for label in labels]
+        preds = ["\n".join(tokenizer.tokenize(pred)) for pred in preds]
+        labels = ["\n".join(tokenizer.tokenize(label)) for label in labels]
 
         return preds, labels
     metric = load_metric("squad")
@@ -300,9 +300,9 @@ def run_mrc(
         print(eval_preds)
         print("compute_metrics")
         print("------------------------------")
-        decoded_preds = decode_tokenizer.batch_decode(preds, skip_special_tokens=True)
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
         # decoded_labels은 rouge metric을 위한 것이며, f1/em을 구할 때 사용되지 않음
-        decoded_labels = decode_tokenizer.batch_decode(labels, skip_special_tokens=True)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
 
         # 간단한 post-processing
         decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
