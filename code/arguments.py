@@ -90,3 +90,6 @@ class DataTrainingArguments:
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
     )
+    run_seq2seq : bool = field(
+        default=False, metadata={"help": "Whether to seq2seq or EncoderDecoder"}
+    )

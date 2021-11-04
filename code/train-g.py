@@ -36,7 +36,7 @@ from utils_qa import postprocess_qa_predictions, check_no_error
 from trainer_qa import QuestionAnsweringTrainer
 from retrieval import SparseRetrieval
 
-from arguments_gene import (
+from arguments import (
     ModelArguments,
     DataTrainingArguments,
 )
@@ -49,7 +49,7 @@ import pytz
 
 import wandb
 
-runn = wandb.init(project="MRC_19_1", entity="woongjoon" , tags = ["KETI-AIR/ke-t5-base", "hf_tokenizer"])
+runn = wandb.init(project="MRC_19_1", entity="woongjoon" , tags = ["klue/bert-base * 2", "hf_tokenizer"])
 
 # wandb.init(project="MRC_19_1", 
 #            name="bertgpt2",
@@ -92,10 +92,10 @@ def main():
         
         evaluation_strategy = 'steps' , 
         eval_steps = 300,
-        # generation_num_beams=10,
         # save_strategy='epoch',
         report_to="wandb",
         fp16 = True,
+        # generation_num_beams=10,
         save_total_limit=2 # 모델 checkpoint를 최대 몇개 저장할지 설정
     )
     # print(f"model is from {model_args.model_name_or_path}")
@@ -117,6 +117,34 @@ def main():
     set_seed(training_args.seed)
 
     datasets = load_from_disk(data_args.dataset_name)
+
+    
+    if data_args.run_seq2seq  :
+        model_args.model_name_or_path = 'google/mt5-small'
+        model = AutoModelForSeq2SeqLM.from_pretrained(
+            model_args.model_name_or_path,
+            # from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            # config=config,
+        )
+        config = AutoConfig.from_pretrained(
+            model_args.model_name_or_path
+            if model_args.config_name is not None
+            else model_args.model_name_or_path,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path
+            if model_args.tokenizer_name is not None
+            else model_args.model_name_or_path,
+            use_fast=True,
+        )
+        print('seq2seq')
+    else:
+        model_name='klue/bert-base'
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+
+        model = EncoderDecoderModel.from_encoder_decoder_pretrained(model_name, model_name)
+        print('ed')
     print(datasets)
 
     print("----")
@@ -124,11 +152,11 @@ def main():
     print("----")
     print(data_args)
     
- 
-    tokenizer=AutoTokenizer.from_pretrained("KETI-AIR/ke-t5-base")
+    
 
-    model=AutoModelForSeq2SeqLM.from_pretrained("KETI-AIR/ke-t5-base")
-
+    model.config.decoder_start_token_id = tokenizer.cls_token_id
+    model.config.pad_token_id = tokenizer.pad_token_id
+    model.config.vocab_size = model.config.decoder.vocab_size  if not data_args.run_seq2seq   else model.config.vocab_size
     training_args.do_train=True
     training_args.do_eval=True
     print(
@@ -139,7 +167,9 @@ def main():
         type(model),
     )
     wandb.watch(model, log_freq=100)
-    
+
+    # print('end')
+    # exit()
     # do_train mrc model 혹은 do_eval mrc model
     if training_args.do_train or training_args.do_eval:
         run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
@@ -150,8 +180,7 @@ def run_mrc(
     training_args: TrainingArguments,
     model_args: ModelArguments,
     datasets: DatasetDict,
-    # data
-    
+
     tokenizer,
     model,
 ) -> NoReturn:
@@ -186,8 +215,9 @@ def run_mrc(
     # padding=True
     # Train preprocessing / 전처리를 진행합니다.
     def preprocess_function(examples):
-        inputs = [f"question: {q}  context: {c} </s>" for q, c in zip(examples["question"], examples["context"])]
-        targets = [f'{a["text"][0]} </s>' for a in examples['answers']]
+
+        inputs = [f"question: {q}  context: {c} <SEP>" for q, c in zip(examples["question"], examples["context"])]
+        targets = [f'{a["text"][0]} <SEP>' for a in examples['answers']]
         # padding=T
         data_args.pad_to_max_length=True
         model_inputs = tokenizer(
@@ -203,7 +233,6 @@ def run_mrc(
             padding="max_length" if data_args.pad_to_max_length else False,
             # return_tensors="pt"
         )
-        # print(model_inputs.keys())
         # targets(label)을 위해 tokenizer 설정
         # print("padding: {0}".format(padding))
         with tokenizer.as_target_tokenizer():
@@ -226,7 +255,9 @@ def run_mrc(
         model_inputs["decoder_input_ids"]= labels["input_ids"].copy()
         for i in range(len(model_inputs["labels"])):
             model_inputs["example_id"].append(examples["id"][i])
-
+        # print("model_inputs: " + model_inputs.keys())
+        # for m in model_inputs.keys():
+        #     print(m + ": " + str(type(model_inputs[m])) )
         return model_inputs
 
 
