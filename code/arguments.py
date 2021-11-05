@@ -26,6 +26,18 @@ class ModelArguments:
             "help": "Pretrained tokenizer name or path if not the same as model_name"
         },
     )
+    run_extraction: bool = field(
+        default=True,
+        metadata={
+            "help": "Run Extraction based model"
+        },
+    )
+    run_generation: bool = field(
+        default=False,
+        metadata={
+            "help": "Run Generation based model"
+        },
+    )
 
 
 @dataclass

@@ -2,33 +2,34 @@ import logging
 import os
 import sys
 
-from typing import List, Callable, NoReturn, NewType, Any
-import dataclasses
+from typing import List, NoReturn, NewType, Any
 from datasets import load_metric, load_from_disk, Dataset, DatasetDict
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
+from kobert_tokenizer import KoBERTTokenizer
+
+import nltk
 
 from transformers import (
     DataCollatorWithPadding,
+    Seq2SeqTrainer,
+    Seq2SeqTrainingArguments,
     EvalPrediction,
     HfArgumentParser,
     TrainingArguments,
-    set_seed,
+    set_seed, 
+    EncoderDecoderModel,
 )
-
-from tokenizers import Tokenizer
-from tokenizers.models import WordPiece
 
 from utils_qa import postprocess_qa_predictions, check_no_error
 from trainer_qa import QuestionAnsweringTrainer
-from retrieval import SparseRetrieval
 
 from arguments import (
     ModelArguments,
     DataTrainingArguments,
 )
 
-
+nltk.download('punkt')
 logger = logging.getLogger(__name__)
 
 
@@ -65,27 +66,47 @@ def main():
     datasets = load_from_disk(data_args.dataset_name)
     print(datasets)
 
-    # AutoConfig를 이용하여 pretrained model 과 tokenizer를 불러옵니다.
-    # argument로 원하는 모델 이름을 설정하면 옵션을 바꿀 수 있습니다.
-    config = AutoConfig.from_pretrained(
-        model_args.config_name
-        if model_args.config_name is not None
-        else model_args.model_name_or_path,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.tokenizer_name
-        if model_args.tokenizer_name is not None
-        else model_args.model_name_or_path,
-        # 'use_fast' argument를 True로 설정할 경우 rust로 구현된 tokenizer를 사용할 수 있습니다.
-        # False로 설정할 경우 python으로 구현된 tokenizer를 사용할 수 있으며,
-        # rust version이 비교적 속도가 빠릅니다.
-        use_fast=True,
-    )
-    model = AutoModelForQuestionAnswering.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-    )
+    if model_args.run_extraction:
+        config = AutoConfig.from_pretrained(
+            model_args.config_name
+            if model_args.config_name is not None
+            else model_args.model_name_or_path,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.tokenizer_name
+            if model_args.tokenizer_name is not None
+            else model_args.model_name_or_path,
+            use_fast=True,
+        )
+        model = AutoModelForQuestionAnswering.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+        )
+    elif model_args.run_generation:
+        model_name='klue/bert-base'
+        training_args = Seq2SeqTrainingArguments(
+            do_train=True, 
+            do_eval=True, 
+            predict_with_generate=True,
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=8,
+            num_train_epochs=2,
+            logging_dir='./logs',
+            logging_steps=100,
+            
+            evaluation_strategy = 'steps' , 
+            eval_steps = 300,
+            report_to="wandb",
+            fp16 = True,
+            save_total_limit=2
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = EncoderDecoderModel.from_encoder_decoder_pretrained(model_name, model_name)
+
+        model.config.decoder_start_token_id = tokenizer.cls_token_id
+        model.config.pad_token_id = tokenizer.pad_token_id
+        model.config.vocab_size = model.config.decoder.vocab_size  if not data_args.run_seq2seq   else model.config.vocab_size
 
     print(
         type(training_args),
@@ -97,10 +118,13 @@ def main():
 
     # do_train mrc model 혹은 do_eval mrc model
     if training_args.do_train or training_args.do_eval:
-        run_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
+        if model_args.run_extraction:
+            run_extraction_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
+        elif model_args.run_generation:
+            run_generation_mrc(data_args, training_args, model_args, datasets, tokenizer, model)
 
 
-def run_mrc(
+def run_extraction_mrc(
     data_args: DataTrainingArguments,
     training_args: TrainingArguments,
     model_args: ModelArguments,
@@ -350,6 +374,172 @@ def run_mrc(
                 writer.write(f"{key} = {value}\n")
 
         # State 저장
+        trainer.state.save_to_json(
+            os.path.join(training_args.output_dir, "trainer_state.json")
+        )
+
+    # Evaluation
+    if training_args.do_eval:
+        logger.info("*** Evaluate ***")
+        metrics = trainer.evaluate()
+
+        metrics["eval_samples"] = len(eval_dataset)
+
+        trainer.log_metrics("eval", metrics)
+        trainer.save_metrics("eval", metrics)
+
+
+def run_generation_mrc(
+    data_args: DataTrainingArguments,
+    training_args: TrainingArguments,
+    model_args: ModelArguments,
+    datasets: DatasetDict,
+    tokenizer,
+    model,
+) -> NoReturn:
+
+    # dataset을 전처리합니다.
+    # training과 evaluation에서 사용되는 전처리는 아주 조금 다른 형태를 가집니다.
+    if training_args.do_train:
+        column_names = datasets["train"].column_names
+    else:
+        column_names = datasets["validation"].column_names
+    
+    print(data_args.pad_to_max_length)
+    print(tokenizer)
+
+    max_seq_length = data_args.max_seq_length
+    max_length = data_args.max_answer_length
+    preprocessing_num_workers=12
+
+    def preprocess_function(examples):
+        inputs = [f"question: {q}  context: {c} <SEP>" for q, c in zip(examples["question"], examples["context"])]
+        targets = [f'{a["text"][0]} <SEP>' for a in examples['answers']]
+        data_args.pad_to_max_length=True
+
+        model_inputs = tokenizer(
+            inputs,
+            truncation=True,
+            max_length=max_seq_length,
+            return_overflowing_tokens=False,
+            return_token_type_ids=False,
+            padding="max_length" if data_args.pad_to_max_length else False,
+        )
+
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(
+                targets,
+                truncation=True,
+                max_length=max_length,
+                return_overflowing_tokens=False,
+                return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+                padding="max_length" if data_args.pad_to_max_length else False,
+                )
+
+        model_inputs["labels"] = labels["input_ids"]
+        model_inputs["example_id"] = []
+        model_inputs["decoder_input_ids"]= labels["input_ids"].copy()
+        for i in range(len(model_inputs["labels"])):
+            model_inputs["example_id"].append(examples["id"][i])
+
+        return model_inputs
+
+
+    if training_args.do_train:
+        if "train" not in datasets:
+            raise ValueError("--do_train requires a train dataset")
+        train_dataset = datasets["train"]
+
+        train_dataset = train_dataset.map(
+            preprocess_function,
+            batched=True,
+            num_proc=preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=False,
+        )
+
+    if training_args.do_eval:
+        eval_dataset = datasets["validation"]
+
+        eval_dataset = eval_dataset.map(
+            preprocess_function,
+            batched=True,
+            num_proc=preprocessing_num_workers,
+            remove_columns=column_names,
+            load_from_cache_file=False,
+        )
+
+    data_collator = DataCollatorWithPadding(
+        tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
+    )
+
+    def postprocess_text(preds, labels):
+        preds = [pred.strip() for pred in preds]
+        labels = [label.strip() for label in labels]
+        
+        preds = ["\n".join(tokenizer.tokenize(pred)) for pred in preds]
+        labels = ["\n".join(tokenizer.tokenize(label)) for label in labels]
+
+        return preds, labels
+
+
+    metric = load_metric("squad")
+
+    def compute_metrics(eval_preds):
+        preds, labels = eval_preds
+
+        if isinstance(preds, tuple):
+            preds = preds[0]
+
+        max_val_samples = 16
+
+        decoded_preds = tokenizer.batch_decode(preds, skip_special_tokens=True)
+        decoded_labels = tokenizer.batch_decode(labels, skip_special_tokens=True)
+
+        decoded_preds, decoded_labels = postprocess_text(decoded_preds, decoded_labels)
+
+        formatted_predictions = [{"id": ex["id"], "prediction_text": decoded_preds[i]} for i, ex in         
+                                 enumerate(datasets["validation"].select(range(max_val_samples)))]
+        references = [{"id": ex["id"], "answers": ex["answers"]} for ex in datasets["validation"].select(range(max_val_samples))]
+
+        result = metric.compute(predictions=formatted_predictions, references=references)
+
+        return result
+    
+
+    num_train_epochs=2
+    batch_size=training_args.per_device_train_batch_size
+    
+    trainer = Seq2SeqTrainer(
+            model=model,
+            args=training_args,
+            train_dataset=train_dataset,
+            eval_dataset=eval_dataset,
+            tokenizer=tokenizer,
+            data_collator=data_collator,
+            compute_metrics=compute_metrics,
+            
+        )
+
+    if training_args.do_train:
+        train_result = trainer.train()
+        trainer.save_model()  # Saves the tokenizer too for easy upload
+
+        metrics = train_result.metrics
+        metrics["train_samples"] = len(train_dataset)
+
+        trainer.log_metrics("train", metrics)
+        trainer.save_metrics("train", metrics)
+        trainer.save_state()
+
+        output_train_file = os.path.join(training_args.output_dir, "train_results.txt")
+
+        with open(output_train_file, "w") as writer:
+            logger.info("***** Train results *****")
+            for key, value in sorted(train_result.metrics.items()):
+                logger.info(f"  {key} = {value}")
+                writer.write(f"{key} = {value}\n")
+
         trainer.state.save_to_json(
             os.path.join(training_args.output_dir, "trainer_state.json")
         )
