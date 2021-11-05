@@ -19,6 +19,20 @@ from datasets import (
     concatenate_datasets,
 )
 
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
+
+from transformers import (
+    AutoTokenizer,
+    BertModel, BertPreTrainedModel,
+    AdamW, get_linear_schedule_with_warmup,
+    TrainingArguments,
+    training_args,
+)
+
+from elasticsearch import Elasticsearch
+
 
 @contextmanager
 def timer(name):
@@ -75,6 +89,60 @@ class SparseRetrieval:
 
         self.p_embedding = None  # get_sparse_embedding()로 생성합니다
         self.indexer = None  # build_faiss()로 생성합니다.
+
+    def elastic_retrieve(
+        self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
+        ) -> Union[Tuple[List, List], pd.DataFrame]:
+        es = Elasticsearch()
+        INDEX_NAME = 'wiki_index'
+
+        if isinstance(query_or_dataset, str):
+            res = es.search(index=INDEX_NAME, q=query_or_dataset)
+            doc_indices = []
+            for hit in res['hits']['hits']:
+                doc_indices.append(hit['_id']) 
+
+            for i in range(topk):
+                # print(f"Top-{i+1} passage with score {doc_scores[i]:4f}")
+                print(self.contexts[doc_indices[i]])
+
+            return ([self.contexts[doc_indices[i]] for i in range(topk)])
+
+        elif isinstance(query_or_dataset, Dataset):
+
+            # Retrieve한 Passage를 pd.DataFrame으로 반환합니다.
+            total = []
+            with timer("query exhaustive search"):
+                doc_indices = []
+                for query in query_or_dataset["question"]:
+                    res = es.search(index=INDEX_NAME, q=query)
+                    doc_indice = []
+                    for hit in res['hits']['hits']:
+                        doc_indice.append(hit['_id']) 
+                    doc_indices.append(doc_indice)
+
+            for idx, example in enumerate(
+                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+            ):
+                tmp = {
+                    # Query와 해당 id를 반환합니다.
+                    "question": example["question"],
+                    "id": example["id"],
+                    # Retrieve한 Passage의 id, context를 반환합니다.
+                    "context_id": doc_indices[idx],
+                    # "context": [self.contexts[pid] for pid in doc_indices[idx]]
+                    "context": " ".join(
+                        [self.contexts[int(pid)] for pid in doc_indices[idx]]
+                    )
+                }
+                if "context" in example.keys() and "answers" in example.keys():
+                    # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
+                    tmp["original_context"] = example["context"]
+                    tmp["answers"] = example["answers"]
+                total.append(tmp)
+
+            cqas = pd.DataFrame(total)
+        return cqas
 
     def get_sparse_embedding(self) -> NoReturn:
 
@@ -167,7 +235,7 @@ class SparseRetrieval:
                 Ground Truth가 있는 Query (train/valid) -> 기존 Ground Truth Passage를 같이 반환합니다.
                 Ground Truth가 없는 Query (test) -> Retrieval한 Passage만 반환합니다.
         """
-
+        
         assert self.p_embedding is not None, "get_sparse_embedding() 메소드를 먼저 수행해줘야합니다."
 
         if isinstance(query_or_dataset, str):
@@ -384,7 +452,7 @@ class SparseRetrieval:
 
         q_embs = query_vecs.toarray().astype(np.float32)
         D, I = self.indexer.search(q_embs, k)
-
+        
         return D.tolist(), I.tolist()
 
 
@@ -393,20 +461,13 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description="")
-    parser.add_argument(
-        "--dataset_name", metavar="./data/train_dataset", type=str, help=""
-    )
-    parser.add_argument(
-        "--model_name_or_path",
-        metavar="bert-base-multilingual-cased",
-        type=str,
-        help="",
-    )
-    parser.add_argument("--data_path", metavar="./data", type=str, help="")
-    parser.add_argument(
-        "--context_path", metavar="wikipedia_documents", type=str, help=""
-    )
-    parser.add_argument("--use_faiss", metavar=False, type=bool, help="")
+    parser.add_argument("--dataset_name", default="../data/train_dataset", type=str, help="")
+    parser.add_argument("--model_name_or_path", default="bert-base-multilingual-cased", type=str, help="",)
+    parser.add_argument("--data_path", default="../data", type=str, help="")
+    parser.add_argument("--context_path", default="wikipedia_documents.json", type=str, help="")
+    parser.add_argument("--use_faiss", default=False, type=bool, help="")
+    parser.add_argument("--faiss", default="L2", type=str, help="")
+    parser.add_argument("--topk", default = 1, type=int, help="")
 
     args = parser.parse_args()
 
@@ -428,15 +489,18 @@ if __name__ == "__main__":
         use_fast=False,
     )
 
+    query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
+
     retriever = SparseRetrieval(
         tokenize_fn=tokenizer.tokenize,
         data_path=args.data_path,
         context_path=args.context_path,
     )
 
-    query = "대통령을 포함한 미국의 행정부 견제권을 갖는 국가 기관은?"
+    retriever.get_sparse_embedding()
 
     if args.use_faiss:
+        retriever.build_faiss()
 
         # test single query
         with timer("single query by faiss"):
