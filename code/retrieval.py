@@ -35,7 +35,8 @@ class SparseRetrieval:
     def __init__(
         self,
         tokenize_fn,
-        data_path: Optional[str] = "../data/",
+        # data_path: Optional[str] = "../data/",
+        data_path: Optional[str] = "/opt/ml/data/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> NoReturn:
 
@@ -120,10 +121,10 @@ class SparseRetrieval:
                     "id": example["id"],
                     # Retrieve한 Passage의 id, context를 반환합니다.
                     "context_id": doc_indices[idx],
-                    # "context": [self.contexts[pid] for pid in doc_indices[idx]]
-                    "context": " ".join(
-                        [self.contexts[int(pid)] for pid in doc_indices[idx]]
-                    )
+                    "context": [self.contexts[int(pid)] for pid in doc_indices[idx]]
+                    # "context": " ".join(
+                    #     [self.contexts[int(pid)] for pid in doc_indices[idx]]
+                    # )
                 }
                 if "context" in example.keys() and "answers" in example.keys():
                     # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
@@ -485,7 +486,7 @@ class DenseRetrieval:
 
         # Pickle을 저장합니다.
         pickle_name = f"dense_embedding.bin"
-        q_encoder_name = f"q_encoder3.pt"
+        q_encoder_name = f"q_encoder0.pt"
         emd_path = os.path.join(self.data_path, pickle_name)
         q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
 
@@ -573,7 +574,7 @@ class DenseRetrieval:
                     queries, k=topk
                 )
             for idx, example in enumerate(
-                tqdm(query_or_dataset, desc="Sparse retrieval: ")
+                tqdm(query_or_dataset, desc="Dense retrieval: ")
             ):
                 tmp = {
                     # Query와 해당 id를 반환합니다.

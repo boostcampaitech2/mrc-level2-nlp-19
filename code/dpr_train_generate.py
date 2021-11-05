@@ -69,7 +69,7 @@ def make_dataset(retriever):
   #         use_fast=True,
   #     )
 
-    datasets = load_from_disk("../data/train_dataset")
+    datasets = load_from_disk("/opt/ml/data/train_dataset")
 
     tokenizer = AutoTokenizer.from_pretrained(
             "klue/bert-base",
@@ -167,7 +167,7 @@ def train(args, num_neg, train_dataset, valid_dataset, p_model, q_model):
     wandb.init(project="MRCProject", config=config, name="train_encoder_8b_5e")
     for num_epochs in train_iterator:
         epoch_iterator = tqdm(train_dataloader, desc="Iteration")
-
+        print(num_epochs)
         loss_value = 0
         matches = 0
         for step, batch in enumerate(epoch_iterator):
@@ -216,6 +216,12 @@ def train(args, num_neg, train_dataset, valid_dataset, p_model, q_model):
             
             torch.cuda.empty_cache()
 
+
+        # 학습된 모델 저장하기
+        MODEL_PATH = "./models/train_dataset"
+        torch.save(p_model, os.path.join(MODEL_PATH, f"p_encoder{num_epochs}.pt"))
+        torch.save(q_model, os.path.join(MODEL_PATH, f"q_encoder{num_epochs}.pt"))
+        print('model_saved')
         train_loss = loss_value / len(epoch_iterator)
         train_acc = matches / len(train_dataset)
         print(
@@ -223,11 +229,6 @@ def train(args, num_neg, train_dataset, valid_dataset, p_model, q_model):
         )
         wandb.log({'epoch' : num_epochs, 'training accuracy':  train_acc, 'training loss': train_loss})
         valid_epoch(q_model, p_model, valid_dataset, args.per_device_eval_batch_size, num_neg, num_epochs)
-        # 학습된 모델 저장하기
-        MODEL_PATH = "./models/train_dataset"
-        if num_epochs >= 3:
-            torch.save(p_model, os.path.join(MODEL_PATH, f"p_encoder{num_epochs}.pt"))
-            torch.save(q_model, os.path.join(MODEL_PATH, f"q_encoder{num_epochs}.pt"))
 
     return p_model, q_model
 
@@ -270,14 +271,15 @@ def valid_epoch(q_model, p_model, valid_dataset, batch_size, num_neg, num_epochs
 
             sim_scores = torch.bmm(q_outputs, p_outputs).squeeze()  #(batch_size, num_neg+1)
             sim_scores = sim_scores.view(batch_size, -1)
-            preds = torch.argmax(F.log_softmax(sim_scores), dim=-1)
             sim_scores = F.log_softmax(sim_scores, dim=1)
+            preds = torch.argmax(sim_scores, dim=-1)
 
             loss = F.nll_loss(sim_scores, targets)
             acc = (targets == preds).sum().item()
             val_loss_items.append(loss)
             val_acc_items.append(acc)
-
+            print(preds)
+        # print(val_acc_items)
         val_loss = np.sum(val_loss_items) / len(valid_dataloader)
         val_acc = np.sum(val_acc_items) / len(valid_dataset)
 
@@ -323,13 +325,13 @@ def run_dpr(context, retriever):
         # negative sampling한 결과
         train_dataset, valid_dataset, tokenizer = make_dataset(retriever)
         # load pre-trained model on cuda (if available)
-        p_encoder = BertEncoder.from_pretrained("klue/bert-base")
-        q_encoder = BertEncoder.from_pretrained("klue/bert-base")
+        p_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
+        q_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
 
         # 학습 설정
         if torch.cuda.is_available():
-            p_encoder.cuda()
-            q_encoder.cuda()
+            p_encoder_p.cuda()
+            q_encoder_p.cuda()
 
 
         args = TrainingArguments(
@@ -338,55 +340,76 @@ def run_dpr(context, retriever):
             learning_rate=2e-5,
             per_device_train_batch_size=4,
             per_device_eval_batch_size=4,
-            num_train_epochs=4,
+            num_train_epochs=2,
             weight_decay=0.01
         )
 
     # 학습
-        p_encoder, q_encoder = train(args, 4, train_dataset, valid_dataset, p_encoder, q_encoder)
+        p_encoder, q_encoder = train(args, 4, train_dataset, valid_dataset, p_encoder_p, q_encoder_p)
 
 
     # dense embedding 결과
     p_embs = make_dense_embedding(p_encoder, tokenizer, context)
-
-    # dense embedding 결과 저장
-    data_path = "../data/"
-    pickle_name = f"dense_embedding.bin"
-    emd_path = os.path.join(data_path, pickle_name)
-    with open(emd_path, "wb") as file:
-        pickle.dump(p_embs, file)
+    print(p_embs.shape)
+    # # dense embedding 결과 저장
+    # data_path = "../data/"
+    # pickle_name = f"dense_embedding.bin"
+    # emd_path = os.path.join(data_path, pickle_name)
+    # with open(emd_path, "wb") as file:
+    #     pickle.dump(p_embs, file)
 
     return q_encoder, p_embs
 
 if __name__ == "__main__":
-    p_encoder_name = f"p_encoder.pt"
-    p_model_path = os.path.join("./models/train_dataset", p_encoder_name)
-    if os.path.isfile(p_model_path):
-        p_encoder = torch.load(p_model_path)
 
     tokenizer = AutoTokenizer.from_pretrained(
-            "klue/bert-base",
-            use_fast=True,
-        )
+        "klue/bert-base",
+        use_fast=True,
+    )
+    from retrieval import SparseRetrieval
+    retriever = SparseRetrieval(tokenize_fn=tokenizer)
+    # make_dataset(retriever)
+    data_path = "/opt/ml/data/"
     context_path = "wikipedia_documents.json"
-    with open(os.path.join("../data", context_path), "r", encoding="utf-8") as f:
+
+    with open(os.path.join(data_path, context_path), "r", encoding="utf-8") as f:
         wiki = json.load(f)
 
-    contexts = list(
+    context = list(
         dict.fromkeys([v["text"] for v in wiki.values()])
-    )
+    )  # set 은 매번 순서가 바뀌므로
+
+    run_dpr(context, retriever)
 
 
-    p_embs = make_dense_embedding(p_encoder, tokenizer, contexts)
-    print(p_embs.shape)
+    # p_encoder_name = f"p_encoder.pt"
+    # p_model_path = os.path.join("./models/train_dataset", p_encoder_name)
+    # if os.path.isfile(p_model_path):
+    #     p_encoder = torch.load(p_model_path)
 
-    pickle_name = f"dense_embedding.bin"
-    emd_path = os.path.join("/opt/ml/data", pickle_name)
-    with open(emd_path, "wb") as file:
-        pickle.dump(p_embs, file)
-    with open(emd_path, "rb") as file:
-        p_embedding = pickle.load(file)
-    print(p_embedding.shape)
+    # tokenizer = AutoTokenizer.from_pretrained(
+    #         "klue/bert-base",
+    #         use_fast=True,
+    #     )
+    # context_path = "wikipedia_documents.json"
+    # with open(os.path.join("../data", context_path), "r", encoding="utf-8") as f:
+    #     wiki = json.load(f)
+
+    # contexts = list(
+    #     dict.fromkeys([v["text"] for v in wiki.values()])
+    # )
+
+
+    # p_embs = make_dense_embedding(p_encoder, tokenizer, contexts)
+    # print(p_embs.shape)
+
+    # pickle_name = f"dense_embedding.bin"
+    # emd_path = os.path.join("/opt/ml/data", pickle_name)
+    # with open(emd_path, "wb") as file:
+    #     pickle.dump(p_embs, file)
+    # with open(emd_path, "rb") as file:
+    #     p_embedding = pickle.load(file)
+    # print(p_embedding.shape)
 
 
 

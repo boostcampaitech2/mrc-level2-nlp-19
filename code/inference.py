@@ -86,6 +86,7 @@ def main():
         if model_args.tokenizer_name
         else model_args.model_name_or_path,
         use_fast=True,
+        return_token_type_ids=False
     )
     model = AutoModelForQuestionAnswering.from_pretrained(
         model_args.model_name_or_path,
@@ -133,7 +134,7 @@ def run_retrieval(
     
 
 
-    df = retriever_sparse.elastic_retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
+    df_sparse = retriever_sparse.elastic_retrieve(datasets["validation"], topk=data_args.top_k_retrieval)
 
 
     retriever_dense = DenseRetrieval(
@@ -144,19 +145,23 @@ def run_retrieval(
     df_dense = retriever_dense.retrieve_faiss(
         datasets["validation"], topk=data_args.top_k_retrieval
     )
-    # df = df_sparse
-    # for idx in range(len(df_sparse)):
-    #     temp = df_sparse["context"][idx] + df_dense["context"][idx]
-    #     df["context"][idx] = " ".join(temp)
-    df = df_dense
-    for idx in range(len(df_dense)):
-        if idx % 1000 == 0:
-            print(df["context_id"][idx])
-            print('-----------')
-            print(df["question"][idx])
-            print('-----------')
-            print(df["context"][idx])
-        df["context"][idx] = " ".join(df_dense["context"][idx])
+    df = df_sparse
+    for idx in range(len(df_sparse)):
+        if idx == 10:
+            print(df_dense["context"][idx])
+        temp = df_sparse["context"][idx] + df_dense["context"][idx]
+        df["context"][idx] = " ".join(temp)
+
+        
+    # df = df_dense
+    # for idx in range(len(df_dense)):
+    #     if idx % 1000 == 0:
+    #         print(df["context_id"][idx])
+    #         print('-----------')
+    #         print(df["question"][idx])
+    #         print('-----------')
+    #         print(df["context"][idx])
+    #     df["context"][idx] = " ".join(df_dense["context"][idx])
 
     # test data 에 대해선 정답이 없으므로 id question context 로만 데이터셋이 구성됩니다.
     if training_args.do_predict:
@@ -228,6 +233,7 @@ def run_mrc(
             return_offsets_mapping=True,
             #return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
             padding="max_length" if data_args.pad_to_max_length else False,
+            return_token_type_ids=False
         )
 
         # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
