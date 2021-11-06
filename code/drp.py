@@ -79,10 +79,9 @@ class DenseRetrieval:
         self.args = args
         self.dataset = dataset
         # self.num_neg = num_neg
-
         self.tokenizer = tokenizer
-        self.p_encoder = p_encoder.to(args.device)
-        self.q_encoder = q_encoder.to(args.device)
+        self.p_encoder = p_encoder
+        self.q_encoder = q_encoder
         self.ret_args = ret_args
         self.indexer = None
 
@@ -681,7 +680,7 @@ if __name__ == "__main__":
     parser.add_argument("--context_path", default="wikipedia_documents.json", type=str, help="")
     parser.add_argument("--use_faiss", default=False, type=bool, help="")
     parser.add_argument("--faiss", default="L2", type=str, help="")
-    parser.add_argument("--retrieve", default="dense", type=str, help="")
+    parser.add_argument("--retrieve", default="dense_train", type=str, help="")
     parser.add_argument("--topk", default = 1, type=int, help="")
 
     args = parser.parse_args()
@@ -749,11 +748,11 @@ if __name__ == "__main__":
 
     retriever = DenseRetrieval(
         training_args,
-            org_dataset,
-            tokenizer,
-            p_encoder,
-            q_encoder,
-            args
+        org_dataset,
+        tokenizer,
+        p_encoder,
+        q_encoder,
+        args
     )
 
 
@@ -794,42 +793,42 @@ if __name__ == "__main__":
                 df["correct"].sum() / len(df),
             )
 
-if args.retrieve == "dense_train":
-    print(f'Bert Encoder from pretrained...{args.model_name_or_path}')
-    print()
-    p_encoder = BertEncoder.from_pretrained(args.model_name_or_path).cuda()
-    q_encoder = BertEncoder.from_pretrained(args.model_name_or_path).cuda()
-    
-    print(f'Initialize training args...')
-    print()
-    training_args = TrainingArguments(
-        output_dir="dense_retireval",
-        evaluation_strategy="epoch",
-        learning_rate=3e-4,
-        per_device_train_batch_size=4,
-        per_device_eval_batch_size=4,
-        num_train_epochs=2,
-        weight_decay=0.01
-    )
-    print('Initialize Denseretrieval...')    
-    print()    
-    retriever = DenseRetrieval(
-        training_args,
-        full_ds,
-        tokenizer,
-        p_encoder,
-        q_encoder,
-        args
-    )
-    print('retriever training...')
-    print()
-    retriever.train()
-    
-    if not os.path.exists('./dense_encoder'):
-        os.mkdir('./dense_encoder')
-    torch.save({
-        'p_encoder': p_encoder.state_dict(),
-        'q_encoder': q_encoder.state_dict()
-        }, './dense_encoder/encoder.pth')
-    
-    print('encoders saved done!')
+    if args.retrieve == "dense_train":
+        print(f'Bert Encoder from pretrained...{args.model_name_or_path}')
+        print()
+        p_encoder = BertEncoder.from_pretrained(args.model_name_or_path).cuda()
+        q_encoder = BertEncoder.from_pretrained(args.model_name_or_path).cuda()
+        
+        print(f'Initialize training args...')
+        print()
+        training_args = TrainingArguments(
+            output_dir="dense_retireval",
+            evaluation_strategy="epoch",
+            learning_rate=3e-4,
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=4,
+            num_train_epochs=2,
+            weight_decay=0.01
+        )
+        print('Initialize Denseretrieval...')    
+        print()    
+        retriever = DenseRetrieval(
+            training_args,
+            full_ds,
+            tokenizer,
+            p_encoder,
+            q_encoder,
+            args
+        )
+        print('retriever training...')
+        print()
+        retriever.train()
+        
+        if not os.path.exists('./dense_encoder'):
+            os.mkdir('./dense_encoder')
+        torch.save({
+            'p_encoder': p_encoder.state_dict(),
+            'q_encoder': q_encoder.state_dict()
+            }, './dense_encoder/encoder.pth')
+        
+        print('encoders saved done!')
