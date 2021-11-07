@@ -102,6 +102,19 @@ class DataTrainingArguments:
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
     )
+    sparse_name: Optional[str] = field(
+        default='elastic',
+        metadata={
+            "help": "Sparse module option. (None, elastic)"
+        },
+    )
+
+    dense_name: Optional[str] = field(
+        default='None',
+        metadata={
+            "help": "Dense module option. (None, in-batch)"
+        },
+    )
     run_seq2seq : bool = field(
         default=False, metadata={"help": "Whether to seq2seq or EncoderDecoder"}
     )
