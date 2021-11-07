@@ -52,7 +52,8 @@ class BertEncoder(BertPreTrainedModel):
 
         return pooled_output
 
-def make_dataset(retriever, datasets, tokenizer, inbatch):
+def make_dataset(retriever, tokenizer, inbatch):
+    datasets = load_from_disk('../data/train_dataset')
     if inbatch == False:
         # sparse embedding -> df : 각 question에 대해 topk passage의 결과를 담은 dataframe
         retriever.get_sparse_embedding()
@@ -399,42 +400,42 @@ def make_dense_embedding(p_encoder, tokenizer, context):
 
 
 
-def run_dpr(context, datasets, tokenizer, retriever, inbatch):
+def run_dpr(context, tokenizer, retriever, inbatch):
+    # dense embedding만 새로 생성하고자 하는 경우 활성화하기
+    # q_encoder_name = f"q_encoder0.pt"
+    # p_encoder_name = f"p_encoder0.pt"
+    # q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
+    # p_model_path = os.path.join("./models/train_dataset", p_encoder_name)
+    # if os.path.isfile(q_model_path):
+    #     q_encoder = torch.load(q_model_path)
+    #     p_encoder = torch.load(p_model_path)
+    # else:
+    # negative sampling한 결과
+    train_dataset, valid_dataset = make_dataset(retriever, tokenizer, inbatch)
+    # load pre-trained model on cuda (if available)
+    p_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
+    q_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
 
-    q_encoder_name = f"q_encoder0.pt"
-    p_encoder_name = f"p_encoder0.pt"
-    q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
-    p_model_path = os.path.join("./models/train_dataset", p_encoder_name)
-    if os.path.isfile(q_model_path):
-        q_encoder = torch.load(q_model_path)
-        p_encoder = torch.load(p_model_path)
+    # 학습 설정
+    if torch.cuda.is_available():
+        p_encoder_p.cuda()
+        q_encoder_p.cuda()
+
+    args = TrainingArguments(
+        output_dir="dense_retireval",
+        evaluation_strategy="epoch",
+        learning_rate=2e-5,
+        per_device_train_batch_size=4,
+        per_device_eval_batch_size=4,
+        num_train_epochs=2,
+        weight_decay=0.01
+    )
+
+# 학습
+    if inbatch == False:
+        p_encoder, q_encoder = train(args, 4, train_dataset, valid_dataset, p_encoder_p, q_encoder_p)
     else:
-        # negative sampling한 결과
-        train_dataset, valid_dataset = make_dataset(retriever, datasets, tokenizer, inbatch)
-        # load pre-trained model on cuda (if available)
-        p_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
-        q_encoder_p = BertEncoder.from_pretrained("klue/bert-base")
-
-        # 학습 설정
-        if torch.cuda.is_available():
-            p_encoder_p.cuda()
-            q_encoder_p.cuda()
-
-        args = TrainingArguments(
-            output_dir="dense_retireval",
-            evaluation_strategy="epoch",
-            learning_rate=2e-5,
-            per_device_train_batch_size=4,
-            per_device_eval_batch_size=4,
-            num_train_epochs=2,
-            weight_decay=0.01
-        )
-
-    # 학습
-        if inbatch == False:
-            p_encoder, q_encoder = train(args, 4, train_dataset, valid_dataset, p_encoder_p, q_encoder_p)
-        else:
-            p_encoder, q_encoder = train_inbatch(args, train_dataset, p_encoder_p, q_encoder_p)
+        p_encoder, q_encoder = train_inbatch(args, train_dataset, p_encoder_p, q_encoder_p)
 
     # dense embedding 결과
     p_embs = make_dense_embedding(p_encoder, tokenizer, context)

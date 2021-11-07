@@ -100,7 +100,7 @@ class DataTrainingArguments:
     )
 
     dense_name: Optional[str] = field(
-        default='None, in-batch',
+        default='None',
         metadata={
             "help": "Dense module option. (None, in-batch)"
         },

@@ -553,7 +553,7 @@ class DenseRetrieval:
         # Pickle과 모델을 저장합니다.
         if inbatch == False:
             pickle_name = f"dense_embedding.bin"
-            q_encoder_name = f"q_encoder0.pt"
+            q_encoder_name = f"q_encoder.pt"
             emd_path = os.path.join(self.data_path, pickle_name)
             q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
         else:
@@ -572,7 +572,7 @@ class DenseRetrieval:
         else:
             print("Build passage dense_embedding")
             retriever = SparseRetrieval(tokenize_fn=self.tokenize_fn)
-            self.q_encoder, self.p_embedding = run_dpr(self.contexts, self.datasets, self.tokenize_fn, retriever, inbatch=inbatch)
+            self.q_encoder, self.p_embedding = run_dpr(self.contexts, self.tokenize_fn, retriever, inbatch=inbatch)
             # print(self.p_embedding.shape)
 
     def build_faiss(self, num_clusters=64) -> NoReturn:

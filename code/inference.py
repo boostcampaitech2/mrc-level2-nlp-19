@@ -143,12 +143,12 @@ def run_retrieval(
         tokenize_fn=tokenize_fn, datasets=datasets, data_path=data_path, context_path=context_path 
     )
     if data_args.dense_name == "None":
-        retriever_dense.get_dense_embedding()
+        retriever_dense.get_dense_embedding(inbatch=False)
         retriever_dense.build_faiss(num_clusters=data_args.num_clusters)
         df_dense = retriever_dense.retrieve_faiss(
             datasets["validation"], topk=data_args.top_k_retrieval
         )
-    else:
+    elif data_args.dense_name == "in-batch":
         retriever_dense.get_dense_embedding(inbatch=True)
         retriever_dense.build_faiss(num_clusters=data_args.num_clusters)
         df_dense = retriever_dense.retrieve_faiss(
