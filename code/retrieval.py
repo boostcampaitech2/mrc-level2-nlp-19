@@ -21,7 +21,7 @@ from datasets import (
     concatenate_datasets,
 )
 
-from elasticsearch import Elasticsearch
+from elasticsearch import Elasticsearch, helpers
 
 
 @contextmanager
@@ -80,15 +80,80 @@ class SparseRetrieval:
 
         self.p_embedding = None  # get_sparse_embedding()로 생성합니다
         self.indexer = None  # build_faiss()로 생성합니다.
+        self.es = Elasticsearch()
+
+    def build_elastic_db(self):
+        # db 이름 설정
+        INDEX_NAME = "wiki_index"
+
+        # db 셋팅
+        INDEX_SETTINGS = {
+        "settings" : {
+            "index":{
+            "analysis":{
+                "analyzer":{
+                "korean":{
+                    "type":"custom",
+                    "tokenizer":"nori_tokenizer",
+                    "filter": [ "shingle" ],
+
+                }
+                }
+            }
+            }
+        },
+        "mappings": {
+
+            "properties" : {
+                "context" : {
+                "type" : "text",
+                "analyzer": "korean",
+                "search_analyzer": "korean"
+                }
+            }
+
+        }
+        }
+
+        # db 생성
+        if self.es.indices.exists(INDEX_NAME):
+            self.es.indices.delete(index=INDEX_NAME)
+        self.es.indices.create(index=INDEX_NAME, body=INDEX_SETTINGS)
+
+        # 데이터 elastic search 입력 형식으로 변환
+        wikis = [
+            {
+                "_index": INDEX_NAME,
+                "_id" : idx,
+                "_source": {
+                    "context": doc
+                }
+            }
+            for idx, doc in enumerate(self.contexts)
+        ]
+        
+        # 데이터 입력
+        try:
+            for idx in range(1000,len(wikis), 1000):
+                response = helpers.bulk(self.es, wikis[idx-1000:idx])
+                # print ("\nRESPONSE:", response)
+            response = helpers.bulk(self.es, wikis[56000:len(wikis)])
+            print ("\nRESPONSE:", response)
+        except Exception as e:
+            print("\nERROR:", e)
+
 
     def elastic_retrieve(
         self, query_or_dataset: Union[str, Dataset], topk: Optional[int] = 1
         ) -> Union[Tuple[List, List], pd.DataFrame]:
-        es = Elasticsearch()
-        INDEX_NAME = 'wiki_index'
+
+        
+        INDEX_NAME = "wiki_index"
+        if not self.es.indices.exists(INDEX_NAME):
+            self.build_elastic_db()
 
         if isinstance(query_or_dataset, str):
-            res = es.search(index=INDEX_NAME, q=query_or_dataset)
+            res = self.es.search(index=INDEX_NAME, q=query_or_dataset)
             doc_indices = []
             for hit in res['hits']['hits']:
                 doc_indices.append(hit['_id']) 
@@ -106,7 +171,7 @@ class SparseRetrieval:
             with timer("query exhaustive search"):
                 doc_indices = []
                 for query in query_or_dataset["question"]:
-                    res = es.search(index=INDEX_NAME, q=query)
+                    res = self.es.search(index=INDEX_NAME, q=query)
                     doc_indice = []
                     for hit in res['hits']['hits']:
                         doc_indice.append(hit['_id']) 
@@ -134,8 +199,6 @@ class SparseRetrieval:
 
             cqas = pd.DataFrame(total)
         return cqas
-
-
 
 
     def get_sparse_embedding(self) -> NoReturn:
@@ -389,9 +452,10 @@ class SparseRetrieval:
                     "id": example["id"],
                     # Retrieve한 Passage의 id, context를 반환합니다.
                     "context_id": doc_indices[idx],
-                    "context": " ".join(
-                        [self.contexts[pid] for pid in doc_indices[idx]]
-                    ),
+                    "context": [self.contexts[pid] for pid in doc_indices[idx]]
+                    # "context": " ".join(
+                    #     [self.contexts[pid] for pid in doc_indices[idx]]
+                    # ),
                 }
                 if "context" in example.keys() and "answers" in example.keys():
                     # validation 데이터를 사용하면 ground_truth context와 answer도 반환합니다.
@@ -455,11 +519,13 @@ class DenseRetrieval:
     def __init__(
         self,
         tokenize_fn,
+        datasets,
         data_path: Optional[str] = "../data/",
         context_path: Optional[str] = "wikipedia_documents.json",
     ) -> NoReturn:
 
         self.tokenize_fn = tokenize_fn
+        self.datasets = datasets
         self.data_path = data_path
         with open(os.path.join(data_path, context_path), "r", encoding="utf-8") as f:
             wiki = json.load(f)
@@ -475,20 +541,27 @@ class DenseRetrieval:
         self.p_embedding = None  
         self.indexer = None  # build_faiss()로 생성합니다.
 
-    def get_dense_embedding(self) -> NoReturn:
+    def get_dense_embedding(self, inbatch) -> NoReturn:
 
         """
         Summary:
-            Passage Embedding을 만들고
+            Passage Embedding을 만들며
             q_encoder, P_encoder 모델을 저장하고 P_Embedding을 pickle로 저장합니다.
             만약 미리 저장된 모델과 파일이 있으면 저장된 모델과, pickle을 불러옵니다.
         """
 
-        # Pickle을 저장합니다.
-        pickle_name = f"dense_embedding.bin"
-        q_encoder_name = f"q_encoder0.pt"
-        emd_path = os.path.join(self.data_path, pickle_name)
-        q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
+        # Pickle과 모델을 저장합니다.
+        if inbatch == False:
+            pickle_name = f"dense_embedding.bin"
+            q_encoder_name = f"q_encoder0.pt"
+            emd_path = os.path.join(self.data_path, pickle_name)
+            q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
+        else:
+            pickle_name = f"dense_embedding_in.bin"
+            q_encoder_name = f"q_encoder_in0.pt"
+            emd_path = os.path.join(self.data_path, pickle_name)
+            q_model_path = os.path.join("./models/train_dataset", q_encoder_name)
+
 
         if os.path.isfile(emd_path) and os.path.isfile(q_model_path):
             with open(emd_path, "rb") as file:
@@ -499,8 +572,8 @@ class DenseRetrieval:
         else:
             print("Build passage dense_embedding")
             retriever = SparseRetrieval(tokenize_fn=self.tokenize_fn)
-            self.q_encoder, self.p_embedding = run_dpr(self.contexts, retriever)
-            print(self.p_embedding.shape)
+            self.q_encoder, self.p_embedding = run_dpr(self.contexts, self.datasets, self.tokenize_fn, retriever, inbatch=inbatch)
+            # print(self.p_embedding.shape)
 
     def build_faiss(self, num_clusters=64) -> NoReturn:
 
@@ -546,7 +619,6 @@ class DenseRetrieval:
             다수의 Query를 받는 경우,
                 Ground Truth가 있는 Query (train/valid) -> 기존 Ground Truth Passage를 같이 반환합니다.
                 Ground Truth가 없는 Query (test) -> Retrieval한 Passage만 반환합니다.
-            retrieve와 같은 기능을 하지만 faiss.indexer를 사용합니다.
         """
 
         assert self.indexer is not None, "build_faiss()를 먼저 수행해주세요."

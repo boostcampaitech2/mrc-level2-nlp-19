@@ -27,6 +27,7 @@ class ModelArguments:
         },
     )
 
+    
 
 @dataclass
 class DataTrainingArguments:
@@ -89,4 +90,18 @@ class DataTrainingArguments:
     )
     use_faiss: bool = field(
         default=False, metadata={"help": "Whether to build with faiss"}
+    )
+
+    sparse_name: Optional[str] = field(
+        default='elastic',
+        metadata={
+            "help": "Sparse module option. (None, elastic)"
+        },
+    )
+
+    dense_name: Optional[str] = field(
+        default='None, in-batch',
+        metadata={
+            "help": "Dense module option. (None, in-batch)"
+        },
     )
