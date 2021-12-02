@@ -93,7 +93,8 @@ def prepare_train_features(examples):
 
 ```
 # 학습 예시 (train_dataset 사용)
-python train.py --output_dir ./models/train_dataset --do_train
+
+
 ```
 
 ### eval
