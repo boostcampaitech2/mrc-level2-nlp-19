@@ -162,7 +162,8 @@ def preprocess_extract_valid(tokenizer, data_args,column_names ,max_seq_length):
     pad_on_right = tokenizer.padding_side == "right"
     question_column_name = "question" if "question" in column_names else column_names[0]
     context_column_name = "context" if "context" in column_names else column_names[1]
-    answer_column_name = "answers" if "answers" in column_names else column_names[2]
+    if len(column_names) >2:
+        answer_column_name = "answers" if "answers" in column_names else column_names[2]
     def extract_tokenized(examples):
         tokenized_examples = tokenizer(
             examples[question_column_name if pad_on_right else context_column_name],
