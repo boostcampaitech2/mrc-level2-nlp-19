@@ -6,9 +6,10 @@ from typing import List, NoReturn, NewType, Any
 from datasets import load_metric, load_from_disk, Dataset, DatasetDict
 
 from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
+from kobert_tokenizer import KoBERTTokenizer
 
-from configure import *
-from preprocess import *
+import nltk
+
 from transformers import (
     DataCollatorWithPadding,
     Seq2SeqTrainer,
@@ -28,6 +29,7 @@ from arguments import (
     DataTrainingArguments,
 )
 
+nltk.download('punkt')
 logger = logging.getLogger(__name__)
 
 
@@ -64,7 +66,47 @@ def main():
     datasets = load_from_disk(data_args.dataset_name)
     print(datasets)
 
-    model,tokenizer =cofngiure_model((model_args))
+    if model_args.run_extraction:
+        config = AutoConfig.from_pretrained(
+            model_args.config_name
+            if model_args.config_name is not None
+            else model_args.model_name_or_path,
+        )
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_args.tokenizer_name
+            if model_args.tokenizer_name is not None
+            else model_args.model_name_or_path,
+            use_fast=True,
+        )
+        model = AutoModelForQuestionAnswering.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            config=config,
+        )
+    elif model_args.run_generation:
+        model_name='klue/bert-base'
+        training_args = Seq2SeqTrainingArguments(
+            do_train=True, 
+            do_eval=True, 
+            predict_with_generate=True,
+            per_device_train_batch_size=4,
+            per_device_eval_batch_size=8,
+            num_train_epochs=2,
+            logging_dir='./logs',
+            logging_steps=100,
+            
+            evaluation_strategy = 'steps' , 
+            eval_steps = 300,
+            report_to="wandb",
+            fp16 = True,
+            save_total_limit=2
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        model = EncoderDecoderModel.from_encoder_decoder_pretrained(model_name, model_name)
+
+        model.config.decoder_start_token_id = tokenizer.cls_token_id
+        model.config.pad_token_id = tokenizer.pad_token_id
+        model.config.vocab_size = model.config.decoder.vocab_size  if not data_args.run_seq2seq   else model.config.vocab_size
 
     print(
         type(training_args),
@@ -73,9 +115,7 @@ def main():
         type(tokenizer),
         type(model),
     )
-    print(model_args.run_extraction)
-    print(model_args.run_generation)
-    exit()
+
     # do_train mrc model 혹은 do_eval mrc model
     if training_args.do_train or training_args.do_eval:
         if model_args.run_extraction:
@@ -113,16 +153,92 @@ def run_extraction_mrc(
         data_args, training_args, datasets, tokenizer
     )
 
+    # Train preprocessing / 전처리를 진행합니다.
+    def prepare_train_features(examples):
+        # truncation과 padding(length가 짧을때만)을 통해 toknization을 진행하며, stride를 이용하여 overflow를 유지합니다.
+        # 각 example들은 이전의 context와 조금씩 겹치게됩니다.
+        tokenized_examples = tokenizer(
+            examples[question_column_name if pad_on_right else context_column_name],
+            examples[context_column_name if pad_on_right else question_column_name],
+            truncation="only_second" if pad_on_right else "only_first",
+            max_length=max_seq_length,
+            stride=data_args.doc_stride,
+            return_overflowing_tokens=True,
+            return_offsets_mapping=True,
+            #return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+            padding="max_length" if data_args.pad_to_max_length else False,
+        )
+
+        # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
+        sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
+        # token의 캐릭터 단위 position를 찾을 수 있도록 offset mapping을 사용합니다.
+        # start_positions과 end_positions을 찾는데 도움을 줄 수 있습니다.
+        offset_mapping = tokenized_examples.pop("offset_mapping")
+
+        # 데이터셋에 "start position", "enc position" label을 부여합니다.
+        tokenized_examples["start_positions"] = []
+        tokenized_examples["end_positions"] = []
+
+        for i, offsets in enumerate(offset_mapping):
+            input_ids = tokenized_examples["input_ids"][i]
+            cls_index = input_ids.index(tokenizer.cls_token_id)  # cls index
+
+            # sequence id를 설정합니다 (to know what is the context and what is the question).
+            sequence_ids = tokenized_examples.sequence_ids(i)
+
+            # 하나의 example이 여러개의 span을 가질 수 있습니다.
+            sample_index = sample_mapping[i]
+            answers = examples[answer_column_name][sample_index]
+
+            # answer가 없을 경우 cls_index를 answer로 설정합니다(== example에서 정답이 없는 경우 존재할 수 있음).
+            if len(answers["answer_start"]) == 0:
+                tokenized_examples["start_positions"].append(cls_index)
+                tokenized_examples["end_positions"].append(cls_index)
+            else:
+                # text에서 정답의 Start/end character index
+                start_char = answers["answer_start"][0]
+                end_char = start_char + len(answers["text"][0])
+
+                # text에서 current span의 Start token index
+                token_start_index = 0
+                while sequence_ids[token_start_index] != (1 if pad_on_right else 0):
+                    token_start_index += 1
+
+                # text에서 current span의 End token index
+                token_end_index = len(input_ids) - 1
+                while sequence_ids[token_end_index] != (1 if pad_on_right else 0):
+                    token_end_index -= 1
+
+                # 정답이 span을 벗어났는지 확인합니다(정답이 없는 경우 CLS index로 label되어있음).
+                if not (
+                    offsets[token_start_index][0] <= start_char
+                    and offsets[token_end_index][1] >= end_char
+                ):
+                    tokenized_examples["start_positions"].append(cls_index)
+                    tokenized_examples["end_positions"].append(cls_index)
+                else:
+                    # token_start_index 및 token_end_index를 answer의 끝으로 이동합니다.
+                    # Note: answer가 마지막 단어인 경우 last offset을 따라갈 수 있습니다(edge case).
+                    while (
+                        token_start_index < len(offsets)
+                        and offsets[token_start_index][0] <= start_char
+                    ):
+                        token_start_index += 1
+                    tokenized_examples["start_positions"].append(token_start_index - 1)
+                    while offsets[token_end_index][1] >= end_char:
+                        token_end_index -= 1
+                    tokenized_examples["end_positions"].append(token_end_index + 1)
+
+        return tokenized_examples
 
     if training_args.do_train:
         if "train" not in datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = datasets["train"]
-        
-        # prepare_train_features = preprocess_gen(tokenizer)
+
         # dataset에서 train feature를 생성합니다.
         train_dataset = train_dataset.map(
-            preprocess_extract_train,
+            prepare_train_features,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
@@ -130,13 +246,50 @@ def run_extraction_mrc(
         )
 
     # Validation preprocessing
+    def prepare_validation_features(examples):
+        # truncation과 padding(length가 짧을때만)을 통해 toknization을 진행하며, stride를 이용하여 overflow를 유지합니다.
+        # 각 example들은 이전의 context와 조금씩 겹치게됩니다.
+        tokenized_examples = tokenizer(
+            examples[question_column_name if pad_on_right else context_column_name],
+            examples[context_column_name if pad_on_right else question_column_name],
+            truncation="only_second" if pad_on_right else "only_first",
+            max_length=max_seq_length,
+            stride=data_args.doc_stride,
+            return_overflowing_tokens=True,
+            return_offsets_mapping=True,
+            #return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+            padding="max_length" if data_args.pad_to_max_length else False,
+        )
+
+        # 길이가 긴 context가 등장할 경우 truncate를 진행해야하므로, 해당 데이터셋을 찾을 수 있도록 mapping 가능한 값이 필요합니다.
+        sample_mapping = tokenized_examples.pop("overflow_to_sample_mapping")
+
+        # evaluation을 위해, prediction을 context의 substring으로 변환해야합니다.
+        # corresponding example_id를 유지하고 offset mappings을 저장해야합니다.
+        tokenized_examples["example_id"] = []
+
+        for i in range(len(tokenized_examples["input_ids"])):
+            # sequence id를 설정합니다 (to know what is the context and what is the question).
+            sequence_ids = tokenized_examples.sequence_ids(i)
+            context_index = 1 if pad_on_right else 0
+
+            # 하나의 example이 여러개의 span을 가질 수 있습니다.
+            sample_index = sample_mapping[i]
+            tokenized_examples["example_id"].append(examples["id"][sample_index])
+
+            # Set to None the offset_mapping을 None으로 설정해서 token position이 context의 일부인지 쉽게 판별 할 수 있습니다.
+            tokenized_examples["offset_mapping"][i] = [
+                (o if sequence_ids[k] == context_index else None)
+                for k, o in enumerate(tokenized_examples["offset_mapping"][i])
+            ]
+        return tokenized_examples
 
     if training_args.do_eval:
         eval_dataset = datasets["validation"]
 
         # Validation Feature 생성
         eval_dataset = eval_dataset.map(
-            preprocess_extract_valid,
+            prepare_validation_features,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
@@ -259,14 +412,44 @@ def run_generation_mrc(
     max_length = data_args.max_answer_length
     preprocessing_num_workers=12
 
+    def preprocess_function(examples):
+        inputs = [f"question: {q}  context: {c} <SEP>" for q, c in zip(examples["question"], examples["context"])]
+        targets = [f'{a["text"][0]} <SEP>' for a in examples['answers']]
+        data_args.pad_to_max_length=True
 
+        model_inputs = tokenizer(
+            inputs,
+            truncation=True,
+            max_length=max_seq_length,
+            return_overflowing_tokens=False,
+            return_token_type_ids=False,
+            padding="max_length" if data_args.pad_to_max_length else False,
+        )
+
+        with tokenizer.as_target_tokenizer():
+            labels = tokenizer(
+                targets,
+                truncation=True,
+                max_length=max_length,
+                return_overflowing_tokens=False,
+                return_token_type_ids=False, # roberta모델을 사용할 경우 False, bert를 사용할 경우 True로 표기해야합니다.
+                padding="max_length" if data_args.pad_to_max_length else False,
+                )
+
+        model_inputs["labels"] = labels["input_ids"]
+        model_inputs["example_id"] = []
+        model_inputs["decoder_input_ids"]= labels["input_ids"].copy()
+        for i in range(len(model_inputs["labels"])):
+            model_inputs["example_id"].append(examples["id"][i])
+
+        return model_inputs
 
 
     if training_args.do_train:
         if "train" not in datasets:
             raise ValueError("--do_train requires a train dataset")
         train_dataset = datasets["train"]
-        preprocess_function = preprocess_gen(tokenizer)
+
         train_dataset = train_dataset.map(
             preprocess_function,
             batched=True,
@@ -274,7 +457,6 @@ def run_generation_mrc(
             remove_columns=column_names,
             load_from_cache_file=False,
         )
-
 
     if training_args.do_eval:
         eval_dataset = datasets["validation"]
@@ -286,8 +468,6 @@ def run_generation_mrc(
             remove_columns=column_names,
             load_from_cache_file=False,
         )
-    print('val_args.do_trian after')
-    exit()
 
     data_collator = DataCollatorWithPadding(
         tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
