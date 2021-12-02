@@ -1,7 +1,7 @@
-from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer
+from transformers import AutoConfig, AutoModelForQuestionAnswering, AutoTokenizer , Seq2SeqTrainingArguments , EncoderDecoderModel
 
 
-def cofngiure_model(model_args):
+def cofngiure_model(model_args , training_args ,data_args):
     if model_args.run_extraction:
         config = AutoConfig.from_pretrained(
             model_args.config_name
@@ -30,7 +30,7 @@ def cofngiure_model(model_args):
             num_train_epochs=2,
             logging_dir='./logs',
             logging_steps=100,
-            
+            output_dir = training_args.output_dir , 
             evaluation_strategy = 'steps' , 
             eval_steps = 300,
             report_to="wandb",

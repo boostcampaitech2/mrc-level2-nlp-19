@@ -60,12 +60,10 @@ def main():
 
     # 모델을 초기화하기 전에 난수를 고정합니다.
     set_seed(training_args.seed)
-
     datasets = load_from_disk(data_args.dataset_name)
     print(datasets)
 
-    model,tokenizer =cofngiure_model((model_args))
-
+    model,tokenizer =cofngiure_model(model_args,training_args ,  data_args)
     print(
         type(training_args),
         type(model_args),
@@ -73,9 +71,7 @@ def main():
         type(tokenizer),
         type(model),
     )
-    print(model_args.run_extraction)
-    print(model_args.run_generation)
-    exit()
+
     # do_train mrc model 혹은 do_eval mrc model
     if training_args.do_train or training_args.do_eval:
         if model_args.run_extraction:
@@ -113,7 +109,7 @@ def run_extraction_mrc(
         data_args, training_args, datasets, tokenizer
     )
 
-
+    
     if training_args.do_train:
         if "train" not in datasets:
             raise ValueError("--do_train requires a train dataset")
@@ -121,8 +117,9 @@ def run_extraction_mrc(
         
         # prepare_train_features = preprocess_gen(tokenizer)
         # dataset에서 train feature를 생성합니다.
+        prepare_train_features = preprocess_extract_train(tokenizer ,data_args,column_names,max_seq_length)
         train_dataset = train_dataset.map(
-            preprocess_extract_train,
+            prepare_train_features,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
@@ -133,16 +130,18 @@ def run_extraction_mrc(
 
     if training_args.do_eval:
         eval_dataset = datasets["validation"]
-
+        prepare_valid_features = preprocess_extract_valid(tokenizer,data_args,column_names,max_seq_length)
         # Validation Feature 생성
         eval_dataset = eval_dataset.map(
-            preprocess_extract_valid,
+            prepare_valid_features,
             batched=True,
             num_proc=data_args.preprocessing_num_workers,
             remove_columns=column_names,
             load_from_cache_file=not data_args.overwrite_cache,
         )
-
+    print('----------------------------------')
+    print('validation_end')
+    exit()
     # Data collator
     # flag가 True이면 이미 max length로 padding된 상태입니다.
     # 그렇지 않다면 data collator에서 padding을 진행해야합니다.
@@ -275,7 +274,6 @@ def run_generation_mrc(
             load_from_cache_file=False,
         )
 
-
     if training_args.do_eval:
         eval_dataset = datasets["validation"]
 
@@ -286,8 +284,6 @@ def run_generation_mrc(
             remove_columns=column_names,
             load_from_cache_file=False,
         )
-    print('val_args.do_trian after')
-    exit()
 
     data_collator = DataCollatorWithPadding(
         tokenizer, pad_to_multiple_of=8 if training_args.fp16 else None
